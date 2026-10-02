@@ -1,6 +1,6 @@
 # learn
 
-[![video](assets/thumbnail.png)](https://www.youtube.com/watch?v=kzcI5F4tGiU)
+![cover photo](assets/thumbnail.png)
 
 A teaching system for Claude Code, packaged as a plugin. Adapted from Amos Blomqvist's pi-based system ([How I Use AI to Learn Things](https://www.youtube.com/watch?v=kzcI5F4tGiU), [original repo](https://github.com/amosblomqvist/learn)). The teaching method is his. This version adds persistence, so a course can run over months.
 
