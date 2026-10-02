@@ -1,0 +1,9 @@
+{
+  "name": "learn",
+  "displayName": "Learn",
+  "version": "0.1.0",
+  "description": "A teaching system for Claude Code: long-term classes with a persistent knowledge map, mastery tracking and spaced re-verification, plus one-off workshops — all readable in Obsidian.",
+  "author": { "name": "Caleb Atchison" },
+  "license": "MIT",
+  "keywords": ["learning", "teaching", "obsidian", "spaced-repetition", "education"]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "learn-local",
+  "description": "Local marketplace for the learn plugin.",
+  "owner": {
+    "name": "SongOfSolar"
+  },
+  "plugins": [
+    {
+      "name": "learn",
+      "source": "./",
+      "description": "Classes with a persistent knowledge map, and one-off workshops."
+    }
+  ]
+}

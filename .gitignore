@@ -16,3 +16,6 @@ __pycache__/
 # Runtime state
 .memory/
 *.log
+
+# Engine build is committed (engine/dist); dependencies are not
+engine/node_modules/

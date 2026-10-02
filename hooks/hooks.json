@@ -1,0 +1,83 @@
+{
+  "description": "learn: mirror lessons into the session note for reading in Obsidian; surface class status at session start.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/engine/dist/cli.js",
+              "hook",
+              "--data",
+              "${CLAUDE_PLUGIN_DATA}",
+              "--project",
+              "${CLAUDE_PROJECT_DIR}"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "mcp__plugin_learn_learn__(quiz_ask|exercise_assign)|AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/engine/dist/cli.js",
+              "hook",
+              "--data",
+              "${CLAUDE_PLUGIN_DATA}",
+              "--project",
+              "${CLAUDE_PROJECT_DIR}"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "mcp__plugin_learn_learn__(quiz_ask|quiz_answer|exercise_assign|exercise_submit)|AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/engine/dist/cli.js",
+              "hook",
+              "--data",
+              "${CLAUDE_PLUGIN_DATA}",
+              "--project",
+              "${CLAUDE_PROJECT_DIR}"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/engine/dist/cli.js",
+              "hook",
+              "--data",
+              "${CLAUDE_PLUGIN_DATA}",
+              "--project",
+              "${CLAUDE_PROJECT_DIR}"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
