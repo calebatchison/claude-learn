@@ -19,7 +19,7 @@ import {
 	saveGraph,
 	writeActive,
 } from "./core/context.ts";
-import { applyChanges, getNode } from "./core/graph.ts";
+import { applyChanges, depthOf, getNode, nodeDepths } from "./core/graph.ts";
 import { markTaught, masteryGap, requiresDerive, status, statuses } from "./core/mastery.ts";
 import { activeGoals, newGoalId, next, planGoal } from "./core/plan.ts";
 import { listNodes, renderMap } from "./core/render.ts";
@@ -68,6 +68,7 @@ function summary(g: Graph, now: Date) {
 		name: g.name,
 		goal: g.goal,
 		phase: g.phase,
+		style: g.style ?? "depth",
 		nodes: Object.keys(g.nodes).length,
 		units: g.units.map((u) => u.id),
 		status_counts: counts,
@@ -242,7 +243,8 @@ server.registerTool(
 		if (scope === "node") {
 			if (!id) throw new Error("scope=node needs id");
 			const n = getNode(g, id);
-			return json({ ...n, status: status(n), gap: masteryGap(n, now) });
+			const d = nodeDepths(g).get(id)!;
+			return json({ ...n, depth: d.depth, ...(d.promotedBy ? { deep_because: d.promotedBy } : {}), status: status(n, d.depth), gap: masteryGap(n, now, d.depth) });
 		}
 		const recs = next(g, now, { count: 6 });
 		const around = new Set<string>();
@@ -272,6 +274,13 @@ const nodeUpsert = z.object({
 			"Override whether mastering this node needs a derive pass. Default: required for concept nodes with prereqs that aren't foundational; not for foundational or practice nodes. Needs derive_reason; every override is logged.",
 		),
 	derive_reason: z.string().optional().describe("Why this node departs from the default derive rule (required with requires_derive)."),
+	depth: z
+		.enum(["deep", "breadth"])
+		.optional()
+		.describe(
+			"Override the class style for this node. deep = full mastery bar and spaced reviews; breadth = covered after one clean pass, reviews only after misses. Promoting to deep keeps all evidence. Refused as breadth while a deep node builds on it. Needs depth_reason; every override is logged.",
+		),
+	depth_reason: z.string().optional().describe("Why this node departs from the class style (required with depth)."),
 });
 const edge = z.object({ from: z.string().describe("prereq"), to: z.string().describe("dependent") });
 
@@ -285,6 +294,12 @@ server.registerTool(
 			name: z.string().optional(),
 			goal: z.string().optional(),
 			phase: z.enum(["setup", "placement", "active"]).optional(),
+			style: z
+				.enum(["depth", "breadth", "mix"])
+				.optional()
+				.describe(
+					"Class depth, chosen from the learner's goal at setup. depth = every node deep; breadth = every node breadth (cover lots of ground); mix = deep for foundational nodes and anything 2+ nodes build on, breadth for the outer topics. Ancestors of a deep node are always deep.",
+				),
 			units: z.array(z.object({ id: z.string(), title: z.string() })).optional().describe("Upserted, in teaching order."),
 			nodes: z.array(nodeUpsert).optional(),
 			remove: z.array(z.string()).optional(),
@@ -306,8 +321,10 @@ server.registerTool(
 			const map = renderMap(graph, now);
 			const section = /## (?:Units|Map)\n[\s\S]*?(```mermaid[\s\S]*?```)/.exec(map)?.[1];
 			const nodes = Object.values(graph.nodes);
+			const depths = nodeDepths(graph);
+			const isDeep = (id: string) => depths.get(id)?.depth === "deep";
 			const derive = {
-				required: nodes.filter(requiresDerive).map((n) => n.id),
+				required: nodes.filter((n) => isDeep(n.id) && requiresDerive(n)).map((n) => n.id),
 				overrides: nodes.filter((n) => n.deriveRules?.length).map((n) => ({ id: n.id, required: n.deriveRules!.at(-1)!.required, reason: n.deriveRules!.at(-1)!.reason })),
 			};
 			return json({
@@ -315,7 +332,13 @@ server.registerTool(
 				would: s,
 				preview: section ?? "(empty map)",
 				derive,
-				note: "Show the learner this one diagram, and which nodes need a derive pass (and any overrides with their reasons); the full detail lives in map.md.",
+				depth: {
+					style: graph.style ?? "depth",
+					breadth: nodes.filter((n) => !isDeep(n.id)).map((n) => n.id),
+					promoted: [...depths].filter(([, d]) => d.promotedBy).map(([id, d]) => ({ id, because: d.promotedBy })),
+					overrides: nodes.filter((n) => n.depthRules?.length).map((n) => ({ id: n.id, depth: n.depthRules!.at(-1)!.depth, reason: n.depthRules!.at(-1)!.reason })),
+				},
+				note: "Show the learner this one diagram, the class style and which nodes are breadth (and which were pulled deep, and why), and which nodes need a derive pass (and any overrides with their reasons); the full detail lives in map.md.",
 			});
 		}
 		saveGraph(c, graph, now);
@@ -362,7 +385,7 @@ server.registerTool(
 		const g = loadGraph(c);
 		markTaught(getNode(g, node), now);
 		saveGraph(c, g, now);
-		return json({ node, status: status(getNode(g, node)) });
+		return json({ node, status: status(getNode(g, node), depthOf(g, node)) });
 	}),
 );
 

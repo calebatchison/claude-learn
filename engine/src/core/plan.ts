@@ -1,4 +1,4 @@
-import { ancestors, dependents, descendants, getNode, topoOrder } from "./graph.ts";
+import { ancestors, dependents, descendants, getNode, nodeDepths, topoOrder } from "./graph.ts";
 import { isDue, isSatisfied, masteryGap, needsRemediation, statuses } from "./mastery.ts";
 import type { Goal, Graph, Status } from "./types.ts";
 import { calendarDaysBetween, iso, parseYmd } from "./util.ts";
@@ -50,6 +50,7 @@ export function next(g: Graph, now: Date, opts: PlanOptions = {}): Recommendatio
 	}
 
 	const st = statuses(g);
+	const depths = nodeDepths(g);
 	const order = topoOrder(g);
 	const pos = new Map(order.map((id, i) => [id, i]));
 	const goals = activeGoals(g);
@@ -103,13 +104,20 @@ export function next(g: Graph, now: Date, opts: PlanOptions = {}): Recommendatio
 		.slice(0, reviewCap);
 	for (const id of due) {
 		const s = st.get(id)!;
-		const gap = masteryGap(getNode(g, id), now);
+		const gap = masteryGap(getNode(g, id), now, depths.get(id)?.depth);
 		out.push({
 			action: "review",
 			node: id,
 			title: title(id),
 			status: s,
-			reason: (s === "assumed" ? "assumed from placement — verify directly" : gap ? `due for re-check (${gap})` : "due for re-check") + goalNote(id),
+			reason:
+				(s === "assumed"
+					? "assumed from placement — verify directly"
+					: depths.get(id)?.depth === "breadth"
+						? "follow-up check after a miss"
+						: gap
+							? `due for re-check (${gap})`
+							: "due for re-check") + goalNote(id),
 		});
 	}
 
@@ -135,7 +143,7 @@ export function next(g: Graph, now: Date, opts: PlanOptions = {}): Recommendatio
 			action: "done",
 			reason: unsolid
 				? `nothing due — ${unsolid} node(s) are passing and will come back for re-checks on schedule`
-				: "every node is solid — add sources or extend the map",
+				: "every node is solid or covered — add sources or extend the map",
 		});
 	}
 	return out.slice(0, count);

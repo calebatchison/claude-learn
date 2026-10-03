@@ -1,4 +1,4 @@
-import { dependents, topoOrder } from "./graph.ts";
+import { dependents, nodeDepths, topoOrder } from "./graph.ts";
 import { atRisk, isDue, masteryGap, statuses } from "./mastery.ts";
 import { activeGoals, next, planGoal } from "./plan.ts";
 import type { Exercise, Graph, Status } from "./types.ts";
@@ -22,6 +22,11 @@ const ICON: Record<Status, string> = {
 	unseen: "⚪",
 };
 
+/** A breadth node that is done is "covered", not "solid". */
+const COVERED = "☑️";
+const isCovered = (g: Graph, st: Map<string, Status>, id: string, depths = nodeDepths(g)) =>
+	st.get(id) === "solid" && depths.get(id)?.depth === "breadth";
+
 const INIT = '%%{init: {"flowchart": {"useMaxWidth": true, "nodeSpacing": 30, "rankSpacing": 40}}}%%';
 
 const CLASS_DEFS = [
@@ -36,7 +41,7 @@ const CLASS_DEFS = [
 	"classDef next stroke:#1565c0,stroke-width:4px",
 ];
 
-const LEGEND = `**Legend:** ${STATUS_ORDER.map((s) => `${ICON[s]} ${s === "taught" ? "taught, unchecked" : s === "passing" ? "passing (not yet re-verified)" : s}`).join(" · ")} · ▶ next up`;
+const LEGEND = `**Legend:** ${STATUS_ORDER.map((s) => `${ICON[s]} ${s === "taught" ? "taught, unchecked" : s === "passing" ? "passing (not yet re-verified)" : s}`).join(" · ")} · ${COVERED} covered (breadth) · ▶ next up`;
 
 const mid = (id: string) => "n_" + id.replace(/[^a-zA-Z0-9_]/g, "_");
 
@@ -72,11 +77,13 @@ function mermaid(g: Graph, ids: Set<string>, st: Map<string, Status>, nextId: st
 	const edges: [string, string][] = [];
 	for (const id of ids) for (const p of g.nodes[id]!.prereqs) if (all.has(p)) edges.push([p, id]);
 	const lines = ["```mermaid", INIT, `graph ${direction([...all], edges)}`];
+	const depths = nodeDepths(g);
 	for (const id of [...ids, ...ext]) {
 		const n = g.nodes[id]!;
 		const isExt = ext.has(id) && !ids.has(id);
 		const prefix = id === nextId ? "▶ " : isExt ? "↑ " : "";
-		lines.push(`  ${mid(id)}["${prefix}${ICON[st.get(id)!]} ${label(n.title)}"]`);
+		const icon = isCovered(g, st, id, depths) ? COVERED : ICON[st.get(id)!];
+		lines.push(`  ${mid(id)}["${prefix}${icon} ${label(n.title)}"]`);
 	}
 	for (const [p, id] of edges) lines.push(`  ${mid(p)} ${ext.has(p) && !ids.has(p) ? "-.->" : "-->"} ${mid(id)}`);
 	lines.push(...CLASS_DEFS.map((c) => "  " + c));
@@ -201,6 +208,15 @@ export function renderProgress(g: Graph, pending: Exercise[], now: Date): string
 	const title = (id: string) => g.nodes[id]?.title ?? id;
 	const out = [`# ${g.name} — progress`, "", `> Generated — don't edit by hand. Updated ${now.toLocaleString()}.`, ""];
 	out.push(`**Goal:** ${g.goal}`, "", `**Phase:** ${g.phase}`, "");
+	if (g.style && g.style !== "depth") {
+		const depths = nodeDepths(g);
+		const ids = Object.keys(g.nodes);
+		const breadth = ids.filter((id) => depths.get(id)?.depth === "breadth");
+		const deep = ids.filter((id) => depths.get(id)?.depth === "deep");
+		const covered = breadth.filter((id) => st.get(id) === "solid").length;
+		const solid = deep.filter((id) => st.get(id) === "solid").length;
+		out.push(`**Style:** ${g.style} — deep: ${solid}/${deep.length} solid · breadth: ${covered}/${breadth.length} covered`, "");
+	}
 
 	out.push("## Next up", "");
 	for (const r of next(g, now, { count: 6 })) {
@@ -242,8 +258,9 @@ export function renderProgress(g: Graph, pending: Exercise[], now: Date): string
 		out.push("");
 	}
 
+	const depths = nodeDepths(g);
 	const almost = Object.values(g.nodes)
-		.map((n) => [n, masteryGap(n, now)] as const)
+		.map((n) => [n, masteryGap(n, now, depths.get(n.id)?.depth)] as const)
 		.filter(([, gap]) => gap);
 	if (almost.length) {
 		out.push("## Passing — not yet solid", "");
@@ -260,7 +277,7 @@ export function renderProgress(g: Graph, pending: Exercise[], now: Date): string
 	}
 
 	if (g.units.length) {
-		out.push("## Units", "", "| Unit | Solid | Passing | Learning | Unseen |", "|---|---|---|---|---|");
+		out.push("## Units", "", "| Unit | Solid / covered | Passing | Learning | Unseen |", "|---|---|---|---|---|");
 		for (const u of g.units) {
 			const ss = Object.values(g.nodes)
 				.filter((n) => n.unit === u.id)
@@ -292,13 +309,17 @@ export function renderProgress(g: Graph, pending: Exercise[], now: Date): string
 /** Compact one-line-per-node listing for the model. */
 export function listNodes(g: Graph, ids?: Iterable<string>): string {
 	const st = statuses(g);
+	const depths = nodeDepths(g);
 	const order = topoOrder(g);
 	const want = ids ? new Set(ids) : undefined;
 	return order
 		.filter((id) => !want || want.has(id))
 		.map((id) => {
 			const n = g.nodes[id]!;
-			const bits = [`${id} | ${n.title} | ${st.get(id)}`];
+			const d = depths.get(id)!;
+			const bits = [`${id} | ${n.title} | ${isCovered(g, st, id, depths) ? "covered" : st.get(id)}`];
+			if (d.depth === "breadth") bits.push("breadth");
+			else if (d.promotedBy) bits.push(`deep (because ${d.promotedBy})`);
 			if (n.unit) bits.push(`unit=${n.unit}`);
 			if (n.kind !== "concept") bits.push(n.kind);
 			if (n.foundational) bits.push("foundational");

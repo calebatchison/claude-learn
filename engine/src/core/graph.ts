@@ -1,4 +1,4 @@
-import type { ContextKind, Graph, GraphNode, NodeKind, Phase, SourceRef, SourceStatus, Unit } from "./types.ts";
+import type { ClassStyle, ContextKind, Depth, Graph, GraphNode, NodeKind, Phase, SourceRef, SourceStatus, Unit } from "./types.ts";
 import { iso } from "./util.ts";
 
 export const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
@@ -85,6 +85,49 @@ export function findCycle(g: Graph): string[] | undefined {
 	return undefined;
 }
 
+/** A node's resolved depth, and the deep node that pulled it deep if it wasn't its own choice. */
+export interface DepthInfo {
+	depth: Depth;
+	promotedBy?: string;
+}
+
+/** Before promotion: the node's last override, else the class style's default. */
+export function ownDepth(g: Graph, id: string, deps = dependents(g)): Depth {
+	const n = getNode(g, id);
+	const rule = n.depthRules?.at(-1);
+	if (rule) return rule.depth;
+	const style: ClassStyle = g.style ?? "depth";
+	if (style === "depth") return "deep";
+	if (style === "breadth") return "breadth";
+	// Mix: deep for the core — foundations and what several things build on.
+	return n.foundational || (deps.get(id)?.length ?? 0) >= 2 ? "deep" : "breadth";
+}
+
+/**
+ * Every node's depth. Deep pulls its whole base deep: any ancestor of a deep
+ * node is deep too, so nothing is learned deeply on a shallow foundation.
+ */
+export function nodeDepths(g: Graph): Map<string, DepthInfo> {
+	const deps = dependents(g);
+	const out = new Map<string, DepthInfo>();
+	for (const id of Object.keys(g.nodes)) out.set(id, { depth: ownDepth(g, id, deps) });
+	// Walk from dependents down to prereqs, so a promoter is resolved before its base.
+	for (const id of [...topoOrder(g)].reverse()) {
+		const info = out.get(id)!;
+		if (info.depth !== "deep") continue;
+		const by = info.promotedBy ?? id;
+		for (const p of g.nodes[id]!.prereqs) {
+			const pi = out.get(p);
+			if (pi && pi.depth === "breadth") out.set(p, { depth: "deep", promotedBy: by });
+		}
+	}
+	return out;
+}
+
+export function depthOf(g: Graph, id: string): Depth {
+	return nodeDepths(g).get(id)?.depth ?? "deep";
+}
+
 /** Longest path from a root (a node with no prereqs is depth 0). */
 export function depths(g: Graph): Map<string, number> {
 	const memo = new Map<string, number>();
@@ -162,6 +205,9 @@ export interface NodeUpsert {
 	/** Override whether this node needs a derive pass for mastery. Needs `derive_reason`. */
 	requires_derive?: boolean;
 	derive_reason?: string;
+	/** Override the class style's depth for this node. Needs `depth_reason`. */
+	depth?: Depth;
+	depth_reason?: string;
 }
 
 export interface Edge {
@@ -173,6 +219,7 @@ export interface ChangeSet {
 	name?: string;
 	goal?: string;
 	phase?: Phase;
+	style?: ClassStyle;
 	units?: Unit[];
 	nodes?: NodeUpsert[];
 	remove?: string[];
@@ -206,6 +253,21 @@ function setDeriveRule(n: GraphNode, up: NodeUpsert, now: Date, errors: string[]
 	n.deriveRules = [...(n.deriveRules ?? []), { required: up.requires_derive, reason: up.derive_reason, at: iso(now) }];
 }
 
+/** Record a depth override. Every change needs a stated reason and is kept. */
+function setDepthRule(n: GraphNode, up: NodeUpsert, now: Date, errors: string[]): void {
+	if (up.depth === undefined) {
+		if (up.depth_reason !== undefined) errors.push(`node "${up.id}": depth_reason given without depth`);
+		return;
+	}
+	if (!up.depth_reason?.trim()) {
+		errors.push(`node "${up.id}": changing depth needs a depth_reason`);
+		return;
+	}
+	const last = n.depthRules?.at(-1);
+	if (last && last.depth === up.depth && last.reason === up.depth_reason) return;
+	n.depthRules = [...(n.depthRules ?? []), { depth: up.depth, reason: up.depth_reason, at: iso(now) }];
+}
+
 /**
  * Apply a change set to a copy of the graph. Throws with every validation
  * error at once if the result would be invalid, so the original is untouched.
@@ -226,6 +288,7 @@ export function applyChanges(g: Graph, cs: ChangeSet, now: Date): { graph: Graph
 	if (cs.name !== undefined) next.name = cs.name;
 	if (cs.goal !== undefined) next.goal = cs.goal;
 	if (cs.phase !== undefined) next.phase = cs.phase;
+	if (cs.style !== undefined) next.style = cs.style;
 
 	for (const u of cs.units ?? []) {
 		if (!ID_RE.test(u.id)) {
@@ -261,6 +324,7 @@ export function applyChanges(g: Graph, cs: ChangeSet, now: Date): { graph: Graph
 			if (up.sources?.length) n.sources = up.sources;
 			if (up.links?.length) n.links = up.links;
 			setDeriveRule(n, up, now, errors);
+			setDepthRule(n, up, now, errors);
 			next.nodes[up.id] = n;
 			summary.added.push(up.id);
 		} else {
@@ -277,6 +341,7 @@ export function applyChanges(g: Graph, cs: ChangeSet, now: Date): { graph: Graph
 			if (up.sources !== undefined) existing.sources = up.sources;
 			if (up.links !== undefined) existing.links = up.links;
 			setDeriveRule(existing, up, now, errors);
+			setDepthRule(existing, up, now, errors);
 			summary.updated.push(up.id);
 		}
 	}
@@ -330,6 +395,14 @@ export function applyChanges(g: Graph, cs: ChangeSet, now: Date): { graph: Graph
 	}
 
 	errors.push(...validate(next));
+	if (!errors.length) {
+		// A node can't go breadth while something deep builds on it.
+		const resolved = nodeDepths(next);
+		for (const up of cs.nodes ?? []) {
+			const by = up.depth === "breadth" ? resolved.get(up.id)?.promotedBy : undefined;
+			if (by) errors.push(`node "${up.id}" can't be breadth: "${by}" is deep and builds on it`);
+		}
+	}
 	if (errors.length) throw new Error(`change set rejected:\n- ${[...new Set(errors)].join("\n- ")}`);
 	return { graph: next, summary };
 }

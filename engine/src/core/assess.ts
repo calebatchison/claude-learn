@@ -1,4 +1,4 @@
-import { getNode } from "./graph.ts";
+import { depthOf, getNode } from "./graph.ts";
 import { creditPrereqs, inferAncestors, record, status } from "./mastery.ts";
 import type { AssessState, Check, Confidence, Evidence, Exercise, ExerciseMode, Graph, LinkResult, Purpose, Quiz, QuizOption, Result, Status } from "./types.ts";
 import { latexToUnicode } from "./plaintext.ts";
@@ -127,7 +127,8 @@ export function gradeQuiz(a: AssessState, g: Graph | undefined, quizId: string, 
 			misconception: grade.misconception,
 			ref: quiz.id,
 		};
-		record(n, ev, now);
+		const depth = depthOf(g, n.id);
+		record(n, ev, now, depth);
 		grade.node = n.id;
 		const credited = creditPrereqs(g, n.id, ev, now);
 		if (credited.length) grade.reviewsPushed = credited;
@@ -136,7 +137,7 @@ export function gradeQuiz(a: AssessState, g: Graph | undefined, quizId: string, 
 			const inferred = inferAncestors(g, n.id, now, quiz.id);
 			if (inferred.length) grade.inferred = inferred;
 		}
-		grade.status = status(n);
+		grade.status = status(n, depth);
 	}
 	delete a.quizzes[quizId];
 	return grade;
@@ -249,8 +250,9 @@ export function submitExercise(
 			...(links ? { links } : {}),
 			ref: ex.id,
 		};
-		record(n, ev, now);
-		st = status(n);
+		const depth = depthOf(g, n.id);
+		record(n, ev, now, depth);
+		st = status(n, depth);
 		const credited = creditPrereqs(g, n.id, ev, now);
 		if (credited.length) reviewsPushed = credited;
 	}

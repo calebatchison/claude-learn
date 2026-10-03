@@ -88,6 +88,30 @@ function descendants(g, id, deps = dependents(g)) {
   }
   return seen;
 }
+function ownDepth(g, id, deps = dependents(g)) {
+  const n = getNode(g, id);
+  const rule = n.depthRules?.at(-1);
+  if (rule) return rule.depth;
+  const style = g.style ?? "depth";
+  if (style === "depth") return "deep";
+  if (style === "breadth") return "breadth";
+  return n.foundational || (deps.get(id)?.length ?? 0) >= 2 ? "deep" : "breadth";
+}
+function nodeDepths(g) {
+  const deps = dependents(g);
+  const out = /* @__PURE__ */ new Map();
+  for (const id of Object.keys(g.nodes)) out.set(id, { depth: ownDepth(g, id, deps) });
+  for (const id of [...topoOrder(g)].reverse()) {
+    const info = out.get(id);
+    if (info.depth !== "deep") continue;
+    const by = info.promotedBy ?? id;
+    for (const p of g.nodes[id].prereqs) {
+      const pi = out.get(p);
+      if (pi && pi.depth === "breadth") out.set(p, { depth: "deep", promotedBy: by });
+    }
+  }
+  return out;
+}
 function depths(g) {
   const memo = /* @__PURE__ */ new Map();
   const depth = (id, guard) => {
@@ -135,7 +159,7 @@ var isTentative = (e) => e.result === "correct" && e.confidence === "unsure";
 var isReal = (e) => e.via !== "inferred" && !isTentative(e);
 var isCleanPass = (e) => e.result === "correct" && (e.hints ?? 0) <= 1;
 var isGenerative = (e) => e.via === "exercise";
-function status(n) {
+function status(n, depth = "deep") {
   const real = n.evidence.filter(isReal);
   if (real.length === 0) {
     if (n.evidence.some((e) => e.via === "inferred" && e.result === "correct")) return "assumed";
@@ -148,6 +172,7 @@ function status(n) {
     if (onlyProbes && !n.taught?.length) return "unseen";
     return "shaky";
   }
+  if (depth === "breadth") return isCleanPass(last) ? "solid" : "passing";
   return meetsMasteryBar(n, real) ? "solid" : "passing";
 }
 function defaultRequiresDerive(n) {
@@ -190,12 +215,13 @@ function needsRemediation(s) {
   return s === "shaky" || s === "misconception";
 }
 function statuses(g) {
-  return new Map(Object.values(g.nodes).map((n) => [n.id, status(n)]));
+  const depths2 = nodeDepths(g);
+  return new Map(Object.values(g.nodes).map((n) => [n.id, status(n, depths2.get(n.id)?.depth)]));
 }
-function masteryGap(n, _now) {
-  const s = status(n);
-  if (s === "solid") return void 0;
+function masteryGap(n, _now, depth = "deep") {
+  const s = status(n, depth);
   if (s !== "passing") return void 0;
+  if (depth === "breadth") return "needs a pass without heavy hints to count as covered";
   const m = missingForMastery(n, n.evidence.filter(isReal));
   const needs = [];
   if (m.derive) needs.push(`a derive check rebuilding it from ${n.prereqs.join(", ")}`);
@@ -238,6 +264,7 @@ function next(g, now, opts = {}) {
     return [{ action: "setup", reason: "placement complete \u2014 set phase to active" }];
   }
   const st = statuses(g);
+  const depths2 = nodeDepths(g);
   const order = topoOrder(g);
   const pos = new Map(order.map((id, i) => [id, i]));
   const goals = activeGoals(g);
@@ -275,13 +302,13 @@ function next(g, now, opts = {}) {
   }).slice(0, reviewCap);
   for (const id of due) {
     const s = st.get(id);
-    const gap = masteryGap(getNode(g, id), now);
+    const gap = masteryGap(getNode(g, id), now, depths2.get(id)?.depth);
     out.push({
       action: "review",
       node: id,
       title: title(id),
       status: s,
-      reason: (s === "assumed" ? "assumed from placement \u2014 verify directly" : gap ? `due for re-check (${gap})` : "due for re-check") + goalNote(id)
+      reason: (s === "assumed" ? "assumed from placement \u2014 verify directly" : depths2.get(id)?.depth === "breadth" ? "follow-up check after a miss" : gap ? `due for re-check (${gap})` : "due for re-check") + goalNote(id)
     });
   }
   let teachable = ids.filter((id) => (st.get(id) === "unseen" || st.get(id) === "taught") && ready(id));
@@ -300,7 +327,7 @@ function next(g, now, opts = {}) {
     const unsolid = ids.filter((id) => st.get(id) !== "solid").length;
     out.push({
       action: "done",
-      reason: unsolid ? `nothing due \u2014 ${unsolid} node(s) are passing and will come back for re-checks on schedule` : "every node is solid \u2014 add sources or extend the map"
+      reason: unsolid ? `nothing due \u2014 ${unsolid} node(s) are passing and will come back for re-checks on schedule` : "every node is solid or covered \u2014 add sources or extend the map"
     });
   }
   return out.slice(0, count);
@@ -359,6 +386,8 @@ var ICON = {
   misconception: "\u{1F534}",
   unseen: "\u26AA"
 };
+var COVERED = "\u2611\uFE0F";
+var isCovered = (g, st, id, depths2 = nodeDepths(g)) => st.get(id) === "solid" && depths2.get(id)?.depth === "breadth";
 var INIT = '%%{init: {"flowchart": {"useMaxWidth": true, "nodeSpacing": 30, "rankSpacing": 40}}}%%';
 var CLASS_DEFS = [
   "classDef solid fill:#2e7d32,stroke:#1b5e20,color:#ffffff",
@@ -371,7 +400,7 @@ var CLASS_DEFS = [
   "classDef ext fill:none,stroke:#9e9e9e,color:#9e9e9e,stroke-dasharray:3 3",
   "classDef next stroke:#1565c0,stroke-width:4px"
 ];
-var LEGEND = `**Legend:** ${STATUS_ORDER.map((s) => `${ICON[s]} ${s === "taught" ? "taught, unchecked" : s === "passing" ? "passing (not yet re-verified)" : s}`).join(" \xB7 ")} \xB7 \u25B6 next up`;
+var LEGEND = `**Legend:** ${STATUS_ORDER.map((s) => `${ICON[s]} ${s === "taught" ? "taught, unchecked" : s === "passing" ? "passing (not yet re-verified)" : s}`).join(" \xB7 ")} \xB7 ${COVERED} covered (breadth) \xB7 \u25B6 next up`;
 var mid = (id) => "n_" + id.replace(/[^a-zA-Z0-9_]/g, "_");
 function direction(nodes, edges) {
   const level = /* @__PURE__ */ new Map();
@@ -396,11 +425,13 @@ function mermaid(g, ids, st, nextId, ext = /* @__PURE__ */ new Set()) {
   const edges = [];
   for (const id of ids) for (const p of g.nodes[id].prereqs) if (all.has(p)) edges.push([p, id]);
   const lines = ["```mermaid", INIT, `graph ${direction([...all], edges)}`];
+  const depths2 = nodeDepths(g);
   for (const id of [...ids, ...ext]) {
     const n = g.nodes[id];
     const isExt = ext.has(id) && !ids.has(id);
     const prefix = id === nextId ? "\u25B6 " : isExt ? "\u2191 " : "";
-    lines.push(`  ${mid(id)}["${prefix}${ICON[st.get(id)]} ${label(n.title)}"]`);
+    const icon = isCovered(g, st, id, depths2) ? COVERED : ICON[st.get(id)];
+    lines.push(`  ${mid(id)}["${prefix}${icon} ${label(n.title)}"]`);
   }
   for (const [p, id] of edges) lines.push(`  ${mid(p)} ${ext.has(p) && !ids.has(p) ? "-.->" : "-->"} ${mid(id)}`);
   lines.push(...CLASS_DEFS.map((c) => "  " + c));
@@ -512,6 +543,15 @@ function renderProgress(g, pending, now) {
   const title = (id) => g.nodes[id]?.title ?? id;
   const out = [`# ${g.name} \u2014 progress`, "", `> Generated \u2014 don't edit by hand. Updated ${now.toLocaleString()}.`, ""];
   out.push(`**Goal:** ${g.goal}`, "", `**Phase:** ${g.phase}`, "");
+  if (g.style && g.style !== "depth") {
+    const depths3 = nodeDepths(g);
+    const ids = Object.keys(g.nodes);
+    const breadth = ids.filter((id) => depths3.get(id)?.depth === "breadth");
+    const deep = ids.filter((id) => depths3.get(id)?.depth === "deep");
+    const covered = breadth.filter((id) => st.get(id) === "solid").length;
+    const solid = deep.filter((id) => st.get(id) === "solid").length;
+    out.push(`**Style:** ${g.style} \u2014 deep: ${solid}/${deep.length} solid \xB7 breadth: ${covered}/${breadth.length} covered`, "");
+  }
   out.push("## Next up", "");
   for (const r of next(g, now, { count: 6 })) {
     out.push(`- **${r.action}**${r.node ? ` \u2014 ${title(r.node)}` : ""}: ${r.reason}`);
@@ -548,7 +588,8 @@ function renderProgress(g, pending, now) {
     if (due.length > 20) out.push(`- \u2026and ${due.length - 20} more`);
     out.push("");
   }
-  const almost = Object.values(g.nodes).map((n) => [n, masteryGap(n, now)]).filter(([, gap]) => gap);
+  const depths2 = nodeDepths(g);
+  const almost = Object.values(g.nodes).map((n) => [n, masteryGap(n, now, depths2.get(n.id)?.depth)]).filter(([, gap]) => gap);
   if (almost.length) {
     out.push("## Passing \u2014 not yet solid", "");
     for (const [n, gap] of almost.slice(0, 15)) out.push(`- ${n.title}: ${gap}`);
@@ -562,7 +603,7 @@ function renderProgress(g, pending, now) {
     out.push("");
   }
   if (g.units.length) {
-    out.push("## Units", "", "| Unit | Solid | Passing | Learning | Unseen |", "|---|---|---|---|---|");
+    out.push("## Units", "", "| Unit | Solid / covered | Passing | Learning | Unseen |", "|---|---|---|---|---|");
     for (const u of g.units) {
       const ss = Object.values(g.nodes).filter((n) => n.unit === u.id).map((n) => st.get(n.id));
       if (!ss.length) continue;

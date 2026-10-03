@@ -1,5 +1,5 @@
-import { ancestors, getNode } from "./graph.ts";
-import type { Check, Evidence, Graph, GraphNode, Status } from "./types.ts";
+import { ancestors, getNode, nodeDepths } from "./graph.ts";
+import type { Check, Depth, Evidence, Graph, GraphNode, Status } from "./types.ts";
 import { addDays, DAY_MS, iso, ymd } from "./util.ts";
 
 /**
@@ -18,6 +18,8 @@ export const MIN_CHECK_KINDS = 2;
 export const DELAYED_RECHECK_MS = 20 * 3600_000;
 export const MAX_INTERVAL_DAYS = 90;
 const ASSUMED_FIRST_REVIEW_DAYS = 5;
+/** Breadth nodes have no ongoing reviews: one follow-up check after a miss, then none. */
+export const FOLLOWUP_DAYS = 3;
 
 /**
  * Right but unsure: a weak pass. It neither counts toward mastery nor breaks
@@ -31,7 +33,12 @@ const isCleanPass = (e: Evidence) => e.result === "correct" && (e.hints ?? 0) <=
 /** The learner produced the answer rather than picking it. */
 const isGenerative = (e: Evidence) => e.via === "exercise";
 
-export function status(n: GraphNode): Status {
+/**
+ * A node's status. A breadth node is done ("covered", shown as such) once its
+ * last direct check was a clean pass; internally that is `solid`, so planning
+ * treats it as finished.
+ */
+export function status(n: GraphNode, depth: Depth = "deep"): Status {
 	const real = n.evidence.filter(isReal);
 	if (real.length === 0) {
 		if (n.evidence.some((e) => e.via === "inferred" && e.result === "correct")) return "assumed";
@@ -46,6 +53,7 @@ export function status(n: GraphNode): Status {
 		if (onlyProbes && !n.taught?.length) return "unseen";
 		return "shaky";
 	}
+	if (depth === "breadth") return isCleanPass(last) ? "solid" : "passing";
 	return meetsMasteryBar(n, real) ? "solid" : "passing";
 }
 
@@ -105,14 +113,15 @@ export function needsRemediation(s: Status): boolean {
 }
 
 export function statuses(g: Graph): Map<string, Status> {
-	return new Map(Object.values(g.nodes).map((n) => [n.id, status(n)]));
+	const depths = nodeDepths(g);
+	return new Map(Object.values(g.nodes).map((n) => [n.id, status(n, depths.get(n.id)?.depth)]));
 }
 
 /** What the learner still needs for this node to count as solid. */
-export function masteryGap(n: GraphNode, _now?: Date): string | undefined {
-	const s = status(n);
-	if (s === "solid") return undefined;
+export function masteryGap(n: GraphNode, _now?: Date, depth: Depth = "deep"): string | undefined {
+	const s = status(n, depth);
 	if (s !== "passing") return undefined;
+	if (depth === "breadth") return "needs a pass without heavy hints to count as covered";
 	const m = missingForMastery(n, n.evidence.filter(isReal));
 	const needs: string[] = [];
 	if (m.derive) needs.push(`a derive check rebuilding it from ${n.prereqs.join(", ")}`);
@@ -130,7 +139,8 @@ export function masteryGap(n: GraphNode, _now?: Date): string | undefined {
  * Intervals grow only when the node was actually due, so a second check in
  * the same session doesn't inflate the schedule.
  */
-export function record(n: GraphNode, ev: Evidence, now: Date): void {
+export function record(n: GraphNode, ev: Evidence, now: Date, depth: Depth = "deep"): void {
+	if (depth === "breadth") return recordBreadth(n, ev, now);
 	n.evidence.push(ev);
 	const cur = n.review?.interval ?? 0;
 	const wasDue = !n.review || Date.parse(n.review.due) - now.getTime() <= DAY_MS / 2;
@@ -148,6 +158,23 @@ export function record(n: GraphNode, ev: Evidence, now: Date): void {
 	else if (cur === 0) interval = 1;
 	else interval = Math.min(MAX_INTERVAL_DAYS, Math.round(cur * (hints ? 1.6 : 2.5)));
 	n.review = { interval, due: iso(addDays(now, interval)) };
+}
+
+/**
+ * Breadth: no spaced reviews. A miss comes back for remediation, and the pass
+ * that fixes it gets a single follow-up check; a clean pass otherwise clears
+ * any scheduled review.
+ */
+function recordBreadth(n: GraphNode, ev: Evidence, now: Date): void {
+	const prev = n.evidence.filter(isReal).at(-1);
+	n.evidence.push(ev);
+	const followUp = (days: number) => {
+		n.review = { interval: days, due: iso(addDays(now, days)) };
+	};
+	if (ev.result === "wrong") n.review = { interval: 0, due: iso(now) };
+	else if (!isCleanPass(ev)) followUp(1);
+	else if (prev && prev.result !== "correct") followUp(FOLLOWUP_DAYS);
+	else delete n.review;
 }
 
 export function markTaught(n: GraphNode, now: Date): void {

@@ -8,6 +8,10 @@
 export type ContextKind = "class" | "workshop";
 export type Phase = "setup" | "placement" | "active";
 export type NodeKind = "concept" | "practice";
+/** How hard each node is learned. Deep = the full mastery bar; breadth = covered after a clean pass. */
+export type Depth = "deep" | "breadth";
+/** A class's default depth: all deep, all breadth, or deep for the core and breadth for the outer topics. */
+export type ClassStyle = "depth" | "breadth" | "mix";
 
 /**
  * What a piece of evidence tested. Mastery requires passes of 2+ kinds.
@@ -43,6 +47,13 @@ export interface LinkResult {
 	ok: boolean;
 }
 
+/** A map-time decision overriding a node's depth. */
+export interface DepthRule {
+	depth: Depth;
+	reason: string;
+	at: string;
+}
+
 /** A map-time decision overriding whether a node needs a derive pass. */
 export interface DeriveRule {
 	required: boolean;
@@ -76,6 +87,8 @@ export interface GraphNode {
 	review?: { interval: number; due: string };
 	/** Overrides of the derive requirement, oldest first; the last one wins. */
 	deriveRules?: DeriveRule[];
+	/** Overrides of the class's default depth, oldest first; the last one wins. */
+	depthRules?: DepthRule[];
 }
 
 export interface Unit {
@@ -120,6 +133,8 @@ export interface Graph {
 	goal: string;
 	created: string;
 	phase: Phase;
+	/** Absent = "depth". */
+	style?: ClassStyle;
 	units: Unit[];
 	nodes: Record<string, GraphNode>;
 	goals: Goal[];

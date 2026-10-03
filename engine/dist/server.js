@@ -36621,6 +36621,33 @@ function findCycle(g) {
   }
   return void 0;
 }
+function ownDepth(g, id, deps = dependents(g)) {
+  const n = getNode(g, id);
+  const rule = n.depthRules?.at(-1);
+  if (rule) return rule.depth;
+  const style = g.style ?? "depth";
+  if (style === "depth") return "deep";
+  if (style === "breadth") return "breadth";
+  return n.foundational || (deps.get(id)?.length ?? 0) >= 2 ? "deep" : "breadth";
+}
+function nodeDepths(g) {
+  const deps = dependents(g);
+  const out = /* @__PURE__ */ new Map();
+  for (const id of Object.keys(g.nodes)) out.set(id, { depth: ownDepth(g, id, deps) });
+  for (const id of [...topoOrder(g)].reverse()) {
+    const info = out.get(id);
+    if (info.depth !== "deep") continue;
+    const by = info.promotedBy ?? id;
+    for (const p of g.nodes[id].prereqs) {
+      const pi = out.get(p);
+      if (pi && pi.depth === "breadth") out.set(p, { depth: "deep", promotedBy: by });
+    }
+  }
+  return out;
+}
+function depthOf(g, id) {
+  return nodeDepths(g).get(id)?.depth ?? "deep";
+}
 function depths(g) {
   const memo2 = /* @__PURE__ */ new Map();
   const depth = (id, guard) => {
@@ -36689,6 +36716,19 @@ function setDeriveRule(n, up, now, errors) {
   if (last && last.required === up.requires_derive && last.reason === up.derive_reason) return;
   n.deriveRules = [...n.deriveRules ?? [], { required: up.requires_derive, reason: up.derive_reason, at: iso(now) }];
 }
+function setDepthRule(n, up, now, errors) {
+  if (up.depth === void 0) {
+    if (up.depth_reason !== void 0) errors.push(`node "${up.id}": depth_reason given without depth`);
+    return;
+  }
+  if (!up.depth_reason?.trim()) {
+    errors.push(`node "${up.id}": changing depth needs a depth_reason`);
+    return;
+  }
+  const last = n.depthRules?.at(-1);
+  if (last && last.depth === up.depth && last.reason === up.depth_reason) return;
+  n.depthRules = [...n.depthRules ?? [], { depth: up.depth, reason: up.depth_reason, at: iso(now) }];
+}
 function applyChanges(g, cs, now) {
   const next2 = structuredClone(g);
   const summary2 = {
@@ -36704,6 +36744,7 @@ function applyChanges(g, cs, now) {
   if (cs.name !== void 0) next2.name = cs.name;
   if (cs.goal !== void 0) next2.goal = cs.goal;
   if (cs.phase !== void 0) next2.phase = cs.phase;
+  if (cs.style !== void 0) next2.style = cs.style;
   for (const u of cs.units ?? []) {
     if (!ID_RE.test(u.id)) {
       errors.push(`unit id "${u.id}" must be lowercase kebab-case`);
@@ -36737,6 +36778,7 @@ function applyChanges(g, cs, now) {
       if (up.sources?.length) n.sources = up.sources;
       if (up.links?.length) n.links = up.links;
       setDeriveRule(n, up, now, errors);
+      setDepthRule(n, up, now, errors);
       next2.nodes[up.id] = n;
       summary2.added.push(up.id);
     } else {
@@ -36753,6 +36795,7 @@ function applyChanges(g, cs, now) {
       if (up.sources !== void 0) existing.sources = up.sources;
       if (up.links !== void 0) existing.links = up.links;
       setDeriveRule(existing, up, now, errors);
+      setDepthRule(existing, up, now, errors);
       summary2.updated.push(up.id);
     }
   }
@@ -36800,6 +36843,13 @@ function applyChanges(g, cs, now) {
     summary2.sourcesUpdated.push(s.file);
   }
   errors.push(...validate2(next2));
+  if (!errors.length) {
+    const resolved = nodeDepths(next2);
+    for (const up of cs.nodes ?? []) {
+      const by = up.depth === "breadth" ? resolved.get(up.id)?.promotedBy : void 0;
+      if (by) errors.push(`node "${up.id}" can't be breadth: "${by}" is deep and builds on it`);
+    }
+  }
   if (errors.length) throw new Error(`change set rejected:
 - ${[...new Set(errors)].join("\n- ")}`);
   return { graph: next2, summary: summary2 };
@@ -36810,11 +36860,12 @@ var MIN_CHECK_KINDS = 2;
 var DELAYED_RECHECK_MS = 20 * 36e5;
 var MAX_INTERVAL_DAYS = 90;
 var ASSUMED_FIRST_REVIEW_DAYS = 5;
+var FOLLOWUP_DAYS = 3;
 var isTentative = (e) => e.result === "correct" && e.confidence === "unsure";
 var isReal = (e) => e.via !== "inferred" && !isTentative(e);
 var isCleanPass = (e) => e.result === "correct" && (e.hints ?? 0) <= 1;
 var isGenerative = (e) => e.via === "exercise";
-function status(n) {
+function status(n, depth = "deep") {
   const real = n.evidence.filter(isReal);
   if (real.length === 0) {
     if (n.evidence.some((e) => e.via === "inferred" && e.result === "correct")) return "assumed";
@@ -36827,6 +36878,7 @@ function status(n) {
     if (onlyProbes && !n.taught?.length) return "unseen";
     return "shaky";
   }
+  if (depth === "breadth") return isCleanPass(last) ? "solid" : "passing";
   return meetsMasteryBar(n, real) ? "solid" : "passing";
 }
 function defaultRequiresDerive(n) {
@@ -36869,12 +36921,13 @@ function needsRemediation(s) {
   return s === "shaky" || s === "misconception";
 }
 function statuses(g) {
-  return new Map(Object.values(g.nodes).map((n) => [n.id, status(n)]));
+  const depths2 = nodeDepths(g);
+  return new Map(Object.values(g.nodes).map((n) => [n.id, status(n, depths2.get(n.id)?.depth)]));
 }
-function masteryGap(n, _now) {
-  const s = status(n);
-  if (s === "solid") return void 0;
+function masteryGap(n, _now, depth = "deep") {
+  const s = status(n, depth);
   if (s !== "passing") return void 0;
+  if (depth === "breadth") return "needs a pass without heavy hints to count as covered";
   const m = missingForMastery(n, n.evidence.filter(isReal));
   const needs = [];
   if (m.derive) needs.push(`a derive check rebuilding it from ${n.prereqs.join(", ")}`);
@@ -36884,7 +36937,8 @@ function masteryGap(n, _now) {
   if (m.delayed) needs.push("a re-check on a later day");
   return needs.length ? `needs ${needs.join(" and ")}` : void 0;
 }
-function record2(n, ev, now) {
+function record2(n, ev, now, depth = "deep") {
+  if (depth === "breadth") return recordBreadth(n, ev, now);
   n.evidence.push(ev);
   const cur = n.review?.interval ?? 0;
   const wasDue = !n.review || Date.parse(n.review.due) - now.getTime() <= DAY_MS / 2;
@@ -36901,6 +36955,17 @@ function record2(n, ev, now) {
   else if (cur === 0) interval = 1;
   else interval = Math.min(MAX_INTERVAL_DAYS, Math.round(cur * (hints ? 1.6 : 2.5)));
   n.review = { interval, due: iso(addDays(now, interval)) };
+}
+function recordBreadth(n, ev, now) {
+  const prev = n.evidence.filter(isReal).at(-1);
+  n.evidence.push(ev);
+  const followUp = (days) => {
+    n.review = { interval: days, due: iso(addDays(now, days)) };
+  };
+  if (ev.result === "wrong") n.review = { interval: 0, due: iso(now) };
+  else if (!isCleanPass(ev)) followUp(1);
+  else if (prev && prev.result !== "correct") followUp(FOLLOWUP_DAYS);
+  else delete n.review;
 }
 function markTaught(n, now) {
   n.taught = [...n.taught ?? [], iso(now)];
@@ -37294,7 +37359,8 @@ function gradeQuiz(a, g, quizId, chosen, now, confidence) {
       misconception: grade.misconception,
       ref: quiz.id
     };
-    record2(n, ev, now);
+    const depth = depthOf(g, n.id);
+    record2(n, ev, now, depth);
     grade.node = n.id;
     const credited = creditPrereqs(g, n.id, ev, now);
     if (credited.length) grade.reviewsPushed = credited;
@@ -37302,7 +37368,7 @@ function gradeQuiz(a, g, quizId, chosen, now, confidence) {
       const inferred = inferAncestors(g, n.id, now, quiz.id);
       if (inferred.length) grade.inferred = inferred;
     }
-    grade.status = status(n);
+    grade.status = status(n, depth);
   }
   delete a.quizzes[quizId];
   return grade;
@@ -37379,8 +37445,9 @@ function submitExercise(a, g, input2, now) {
       ...links ? { links } : {},
       ref: ex.id
     };
-    record2(n, ev, now);
-    st = status(n);
+    const depth = depthOf(g, n.id);
+    record2(n, ev, now, depth);
+    st = status(n, depth);
     const credited = creditPrereqs(g, n.id, ev, now);
     if (credited.length) reviewsPushed = credited;
   }
@@ -37418,6 +37485,7 @@ function next(g, now, opts = {}) {
     return [{ action: "setup", reason: "placement complete \u2014 set phase to active" }];
   }
   const st = statuses(g);
+  const depths2 = nodeDepths(g);
   const order = topoOrder(g);
   const pos = new Map(order.map((id, i) => [id, i]));
   const goals = activeGoals(g);
@@ -37455,13 +37523,13 @@ function next(g, now, opts = {}) {
   }).slice(0, reviewCap);
   for (const id of due) {
     const s = st.get(id);
-    const gap = masteryGap(getNode(g, id), now);
+    const gap = masteryGap(getNode(g, id), now, depths2.get(id)?.depth);
     out.push({
       action: "review",
       node: id,
       title: title(id),
       status: s,
-      reason: (s === "assumed" ? "assumed from placement \u2014 verify directly" : gap ? `due for re-check (${gap})` : "due for re-check") + goalNote(id)
+      reason: (s === "assumed" ? "assumed from placement \u2014 verify directly" : depths2.get(id)?.depth === "breadth" ? "follow-up check after a miss" : gap ? `due for re-check (${gap})` : "due for re-check") + goalNote(id)
     });
   }
   let teachable = ids.filter((id) => (st.get(id) === "unseen" || st.get(id) === "taught") && ready(id));
@@ -37480,7 +37548,7 @@ function next(g, now, opts = {}) {
     const unsolid = ids.filter((id) => st.get(id) !== "solid").length;
     out.push({
       action: "done",
-      reason: unsolid ? `nothing due \u2014 ${unsolid} node(s) are passing and will come back for re-checks on schedule` : "every node is solid \u2014 add sources or extend the map"
+      reason: unsolid ? `nothing due \u2014 ${unsolid} node(s) are passing and will come back for re-checks on schedule` : "every node is solid or covered \u2014 add sources or extend the map"
     });
   }
   return out.slice(0, count);
@@ -37542,6 +37610,8 @@ var ICON = {
   misconception: "\u{1F534}",
   unseen: "\u26AA"
 };
+var COVERED = "\u2611\uFE0F";
+var isCovered = (g, st, id, depths2 = nodeDepths(g)) => st.get(id) === "solid" && depths2.get(id)?.depth === "breadth";
 var INIT = '%%{init: {"flowchart": {"useMaxWidth": true, "nodeSpacing": 30, "rankSpacing": 40}}}%%';
 var CLASS_DEFS = [
   "classDef solid fill:#2e7d32,stroke:#1b5e20,color:#ffffff",
@@ -37554,7 +37624,7 @@ var CLASS_DEFS = [
   "classDef ext fill:none,stroke:#9e9e9e,color:#9e9e9e,stroke-dasharray:3 3",
   "classDef next stroke:#1565c0,stroke-width:4px"
 ];
-var LEGEND = `**Legend:** ${STATUS_ORDER.map((s) => `${ICON[s]} ${s === "taught" ? "taught, unchecked" : s === "passing" ? "passing (not yet re-verified)" : s}`).join(" \xB7 ")} \xB7 \u25B6 next up`;
+var LEGEND = `**Legend:** ${STATUS_ORDER.map((s) => `${ICON[s]} ${s === "taught" ? "taught, unchecked" : s === "passing" ? "passing (not yet re-verified)" : s}`).join(" \xB7 ")} \xB7 ${COVERED} covered (breadth) \xB7 \u25B6 next up`;
 var mid = (id) => "n_" + id.replace(/[^a-zA-Z0-9_]/g, "_");
 function direction(nodes, edges) {
   const level = /* @__PURE__ */ new Map();
@@ -37579,11 +37649,13 @@ function mermaid(g, ids, st, nextId, ext = /* @__PURE__ */ new Set()) {
   const edges = [];
   for (const id of ids) for (const p of g.nodes[id].prereqs) if (all.has(p)) edges.push([p, id]);
   const lines = ["```mermaid", INIT, `graph ${direction([...all], edges)}`];
+  const depths2 = nodeDepths(g);
   for (const id of [...ids, ...ext]) {
     const n = g.nodes[id];
     const isExt = ext.has(id) && !ids.has(id);
     const prefix = id === nextId ? "\u25B6 " : isExt ? "\u2191 " : "";
-    lines.push(`  ${mid(id)}["${prefix}${ICON[st.get(id)]} ${label(n.title)}"]`);
+    const icon = isCovered(g, st, id, depths2) ? COVERED : ICON[st.get(id)];
+    lines.push(`  ${mid(id)}["${prefix}${icon} ${label(n.title)}"]`);
   }
   for (const [p, id] of edges) lines.push(`  ${mid(p)} ${ext.has(p) && !ids.has(p) ? "-.->" : "-->"} ${mid(id)}`);
   lines.push(...CLASS_DEFS.map((c) => "  " + c));
@@ -37695,6 +37767,15 @@ function renderProgress(g, pending, now) {
   const title = (id) => g.nodes[id]?.title ?? id;
   const out = [`# ${g.name} \u2014 progress`, "", `> Generated \u2014 don't edit by hand. Updated ${now.toLocaleString()}.`, ""];
   out.push(`**Goal:** ${g.goal}`, "", `**Phase:** ${g.phase}`, "");
+  if (g.style && g.style !== "depth") {
+    const depths3 = nodeDepths(g);
+    const ids = Object.keys(g.nodes);
+    const breadth = ids.filter((id) => depths3.get(id)?.depth === "breadth");
+    const deep = ids.filter((id) => depths3.get(id)?.depth === "deep");
+    const covered = breadth.filter((id) => st.get(id) === "solid").length;
+    const solid = deep.filter((id) => st.get(id) === "solid").length;
+    out.push(`**Style:** ${g.style} \u2014 deep: ${solid}/${deep.length} solid \xB7 breadth: ${covered}/${breadth.length} covered`, "");
+  }
   out.push("## Next up", "");
   for (const r of next(g, now, { count: 6 })) {
     out.push(`- **${r.action}**${r.node ? ` \u2014 ${title(r.node)}` : ""}: ${r.reason}`);
@@ -37731,7 +37812,8 @@ function renderProgress(g, pending, now) {
     if (due.length > 20) out.push(`- \u2026and ${due.length - 20} more`);
     out.push("");
   }
-  const almost = Object.values(g.nodes).map((n) => [n, masteryGap(n, now)]).filter(([, gap]) => gap);
+  const depths2 = nodeDepths(g);
+  const almost = Object.values(g.nodes).map((n) => [n, masteryGap(n, now, depths2.get(n.id)?.depth)]).filter(([, gap]) => gap);
   if (almost.length) {
     out.push("## Passing \u2014 not yet solid", "");
     for (const [n, gap] of almost.slice(0, 15)) out.push(`- ${n.title}: ${gap}`);
@@ -37745,7 +37827,7 @@ function renderProgress(g, pending, now) {
     out.push("");
   }
   if (g.units.length) {
-    out.push("## Units", "", "| Unit | Solid | Passing | Learning | Unseen |", "|---|---|---|---|---|");
+    out.push("## Units", "", "| Unit | Solid / covered | Passing | Learning | Unseen |", "|---|---|---|---|---|");
     for (const u of g.units) {
       const ss = Object.values(g.nodes).filter((n) => n.unit === u.id).map((n) => st.get(n.id));
       if (!ss.length) continue;
@@ -37771,11 +37853,15 @@ function renderProgress(g, pending, now) {
 }
 function listNodes(g, ids) {
   const st = statuses(g);
+  const depths2 = nodeDepths(g);
   const order = topoOrder(g);
   const want = ids ? new Set(ids) : void 0;
   return order.filter((id) => !want || want.has(id)).map((id) => {
     const n = g.nodes[id];
-    const bits = [`${id} | ${n.title} | ${st.get(id)}`];
+    const d = depths2.get(id);
+    const bits = [`${id} | ${n.title} | ${isCovered(g, st, id, depths2) ? "covered" : st.get(id)}`];
+    if (d.depth === "breadth") bits.push("breadth");
+    else if (d.promotedBy) bits.push(`deep (because ${d.promotedBy})`);
     if (n.unit) bits.push(`unit=${n.unit}`);
     if (n.kind !== "concept") bits.push(n.kind);
     if (n.foundational) bits.push("foundational");
@@ -38075,6 +38161,7 @@ function summary(g, now) {
     name: g.name,
     goal: g.goal,
     phase: g.phase,
+    style: g.style ?? "depth",
     nodes: Object.keys(g.nodes).length,
     units: g.units.map((u) => u.id),
     status_counts: counts,
@@ -38231,7 +38318,8 @@ server.registerTool(
     if (scope === "node") {
       if (!id) throw new Error("scope=node needs id");
       const n = getNode(g, id);
-      return json2({ ...n, status: status(n), gap: masteryGap(n, now) });
+      const d = nodeDepths(g).get(id);
+      return json2({ ...n, depth: d.depth, ...d.promotedBy ? { deep_because: d.promotedBy } : {}, status: status(n, d.depth), gap: masteryGap(n, now, d.depth) });
     }
     const recs = next(g, now, { count: 6 });
     const around = /* @__PURE__ */ new Set();
@@ -38256,7 +38344,11 @@ var nodeUpsert = external_exports.object({
   requires_derive: external_exports.boolean().optional().describe(
     "Override whether mastering this node needs a derive pass. Default: required for concept nodes with prereqs that aren't foundational; not for foundational or practice nodes. Needs derive_reason; every override is logged."
   ),
-  derive_reason: external_exports.string().optional().describe("Why this node departs from the default derive rule (required with requires_derive).")
+  derive_reason: external_exports.string().optional().describe("Why this node departs from the default derive rule (required with requires_derive)."),
+  depth: external_exports.enum(["deep", "breadth"]).optional().describe(
+    "Override the class style for this node. deep = full mastery bar and spaced reviews; breadth = covered after one clean pass, reviews only after misses. Promoting to deep keeps all evidence. Refused as breadth while a deep node builds on it. Needs depth_reason; every override is logged."
+  ),
+  depth_reason: external_exports.string().optional().describe("Why this node departs from the class style (required with depth).")
 });
 var edge = external_exports.object({ from: external_exports.string().describe("prereq"), to: external_exports.string().describe("dependent") });
 server.registerTool(
@@ -38268,6 +38360,9 @@ server.registerTool(
       name: external_exports.string().optional(),
       goal: external_exports.string().optional(),
       phase: external_exports.enum(["setup", "placement", "active"]).optional(),
+      style: external_exports.enum(["depth", "breadth", "mix"]).optional().describe(
+        "Class depth, chosen from the learner's goal at setup. depth = every node deep; breadth = every node breadth (cover lots of ground); mix = deep for foundational nodes and anything 2+ nodes build on, breadth for the outer topics. Ancestors of a deep node are always deep."
+      ),
       units: external_exports.array(external_exports.object({ id: external_exports.string(), title: external_exports.string() })).optional().describe("Upserted, in teaching order."),
       nodes: external_exports.array(nodeUpsert).optional(),
       remove: external_exports.array(external_exports.string()).optional(),
@@ -38286,8 +38381,10 @@ server.registerTool(
       const map2 = renderMap(graph, now);
       const section = /## (?:Units|Map)\n[\s\S]*?(```mermaid[\s\S]*?```)/.exec(map2)?.[1];
       const nodes = Object.values(graph.nodes);
+      const depths2 = nodeDepths(graph);
+      const isDeep = (id) => depths2.get(id)?.depth === "deep";
       const derive = {
-        required: nodes.filter(requiresDerive).map((n) => n.id),
+        required: nodes.filter((n) => isDeep(n.id) && requiresDerive(n)).map((n) => n.id),
         overrides: nodes.filter((n) => n.deriveRules?.length).map((n) => ({ id: n.id, required: n.deriveRules.at(-1).required, reason: n.deriveRules.at(-1).reason }))
       };
       return json2({
@@ -38295,7 +38392,13 @@ server.registerTool(
         would: s,
         preview: section ?? "(empty map)",
         derive,
-        note: "Show the learner this one diagram, and which nodes need a derive pass (and any overrides with their reasons); the full detail lives in map.md."
+        depth: {
+          style: graph.style ?? "depth",
+          breadth: nodes.filter((n) => !isDeep(n.id)).map((n) => n.id),
+          promoted: [...depths2].filter(([, d]) => d.promotedBy).map(([id, d]) => ({ id, because: d.promotedBy })),
+          overrides: nodes.filter((n) => n.depthRules?.length).map((n) => ({ id: n.id, depth: n.depthRules.at(-1).depth, reason: n.depthRules.at(-1).reason }))
+        },
+        note: "Show the learner this one diagram, the class style and which nodes are breadth (and which were pulled deep, and why), and which nodes need a derive pass (and any overrides with their reasons); the full detail lives in map.md."
       });
     }
     saveGraph(c, graph, now);
@@ -38338,7 +38441,7 @@ server.registerTool(
     const g = loadGraph(c);
     markTaught(getNode(g, node2), now);
     saveGraph(c, g, now);
-    return json2({ node: node2, status: status(getNode(g, node2)) });
+    return json2({ node: node2, status: status(getNode(g, node2), depthOf(g, node2)) });
   })
 );
 var CONFIDENCE_FIELD = {
