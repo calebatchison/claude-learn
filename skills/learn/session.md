@@ -16,7 +16,13 @@ Work through `next`, one item at a time. Call `next` again after each item — r
 
 **`review`** — spaced re-verification. Ask **one** question, cold, no re-teaching first, and pass on their confidence answer. If the reason says the node needs a derive check or a free-response exercise, use that instead of multiple choice. Choose the check kind the reason asks for ("needs a transfer check") — a different kind from earlier passes is what turns *passing* into *solid*. For an *assumed* node, a quick direct check is enough. If they miss, it becomes remediation — do that before new material.
 
+For a **breadth** node the reason says "follow-up check after a miss": one cold question confirms it; a clean pass ends its reviews.
+
 **`teach`** — a new node. Run the `teach` skill's loop: motivate → establish → connect → `node_taught` → check. Teach the foundation it rests on if a probe reveals it's missing (and add it to the map).
+
+**`practice`** — a covered **breadth** node that could use more problems. The reason says how many they've done and which difficulty to try next. Assign one problem with `exercise_assign` and its `difficulty`; vary the problem type, not just the numbers. A clean solve keeps it covered; a miss turns it into remediation. Practice comes after new material, so don't let it crowd out new nodes unless they ask to drill.
+
+If they decide a breadth node matters more than planned ("I keep needing this"), promote it: `graph_apply` with `depth: "deep"` and a `depth_reason`. Its evidence carries over and is judged against the full bar.
 
 **`done`** — nothing due. Say so; offer to pull a review forward, practise, extend the map, or stop.
 

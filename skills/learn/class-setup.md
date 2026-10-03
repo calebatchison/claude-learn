@@ -6,6 +6,14 @@ A class is long-term: the map you build now is the spine of every future session
 
 Interview with `AskUserQuestion` until the goal is concrete: what course or skill, what they need to be able to do at the end (pass a grad exam? solve medium LeetCode problems in 25 minutes? read papers in the field?), any deadlines, how they like to learn. Then `class_init` with a name, goal, scope and preferences.
 
+From the goal, decide the **class style** (`style` in `graph_apply`) — how deep to go:
+
+- **`depth`** — they need to *build on* or *reason from* this material (a course they'll be examined on, a field they'll work in). Every node gets the full mastery bar and spaced reviews.
+- **`breadth`** — they want *coverage*: lots of topics, lots of problems, recognising what's what (surveying a field, getting exposure to many LeetCode patterns). A node is *covered* after one clean pass; reviews happen only after a miss.
+- **`mix`** — a core they must own plus a wide outer layer. Foundational nodes and anything two or more nodes build on are deep; the outer topics are breadth.
+
+If the goal doesn't make it obvious, ask. Either way, say which you picked and why when you present the map.
+
 Tell them the folder layout once: drop course files (syllabus, lecture notes, slides, problem sets, past exams) into `sources/`; open the folder as (or inside) an Obsidian vault to read `map.md`, `progress.md` and `sessions/`.
 
 ## 2. Scope the field
@@ -22,6 +30,7 @@ The map is a DAG of **nodes** (one teachable idea each) grouped into **units** (
 - **Roots** are unconditional truths or real definitions (`foundational: true`). **Stress-test every root**: is it genuinely something this learner can accept at face value, or a disguised theorem that derives from something simpler? If it derives, push it down and extend the map. A wrong root corrupts everything hung off it.
 - **Practice nodes** (`kind: practice`) are problems that exercise concepts — e.g. one per LeetCode problem, with the URL in `links` and the pattern concepts as prereqs. They're mastered by solving, not by multiple choice.
 - **Derive requirement:** by default, a concept node with prerequisites that isn't foundational needs a **derive** pass (rebuild it from all its prereqs) before it can be solid; foundational and practice nodes don't. Override per node where the default is wrong — e.g. a node that's pure notation or a convention (`requires_derive: false`), or a foundational-looking node that really should be derived (`true`) — always with a `derive_reason`. Decide this now, at map time, not while grading.
+- **Depth overrides:** the style sets each node's default; override a node with `depth: "deep" | "breadth"` and a `depth_reason` where the default is wrong (e.g. in a breadth class, the one technique their goal hinges on). Everything a deep node builds on is pulled deep automatically, and a node can't be set to breadth while a deep node builds on it. Derive requirements only apply to deep nodes.
 - **Cite sources**: `sources: [{file, page}]` on nodes drawn from course material.
 - **Ids** are permanent kebab-case (`eigen-decomposition`); titles are short.
 
@@ -33,7 +42,8 @@ Show the learner, in chat:
 
 1. **The approach, in prose** — what the course covers, in what order, and why this way given their goal.
 2. **The map** — paste the single diagram `graph_apply`'s dry-run `preview` returns (the unit overview, or the whole map if it's small). Don't hand-draw the full graph — `map.md` has the per-unit detail.
-3. **The derive rule** — one line on which nodes will need a derive pass (the dry-run's `derive` field), and list any overrides with their reasons.
+3. **Depth** — the class style and why, which nodes are breadth (the dry-run's `depth` field), which were pulled deep and by what, and any overrides with their reasons. Tell them they can move any node either way, now or later.
+4. **The derive rule** — one line on which nodes will need a derive pass (the dry-run's `derive` field), and list any overrides with their reasons.
 
 Then **stop and wait for their go-ahead.** A wrong root or scope is cheap to fix now and expensive mid-course. Apply any changes they ask for.
 

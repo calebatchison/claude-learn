@@ -71,6 +71,7 @@ Every quiz and exercise result is recorded as evidence on a map node. Status is 
 | shaky | Last check missed |
 | misconception | Last check revealed a named wrong model, which has to be dislodged |
 | passing | Last check right, but not yet re-verified |
+| covered | A **breadth** node whose last check was a clean pass (shown ☑️). Done, unless a later check misses |
 | solid | Clean passes on **two different kinds** of check (recall, transfer, worked problem, derive) **and** a pass on a **later day**, **and** at least one **free-response** pass, **and**, for a node built on other ideas, a **derive** pass that rebuilt it from all of its prerequisites |
 
 Re-checks use spaced repetition: the interval grows when you pass a due review and resets on a miss. Reviews also use the map: a cold, confident pass on an idea pushes back the next review of the ideas underneath it (half their interval one level down, less further down), since you just used them. That only moves dates; it never counts as evidence. `next` always orders the work the same way:
@@ -78,7 +79,18 @@ Re-checks use spaced repetition: the interval grows when you pass a due review a
 2. a few due reviews
 3. new nodes whose prerequisites you hold
 
+4. practice on covered breadth nodes (fewest problems first)
+
 An active goal restricts new material to the goal's prerequisite path.
+
+### Depth and breadth
+
+Not everything needs the full bar. At setup Claude picks a **class style** from your goal: **depth** (everything deep), **breadth** (cover lots of ground) or **mix** (deep for the foundations and the ideas many others build on, breadth for the outer topics). Each node ends up deep or breadth, and the map you approve shows which.
+
+- A **breadth** node is *covered* after one clean pass. Right but unsure still counts, with one follow-up check. There are no spaced reviews, just one follow-up after a miss. Misconceptions are still fixed first.
+- Anything a deep node builds on is deep too, so you never go deep on a shallow base.
+- Each node tracks how many problems you've done and at what difficulty, and covered breadth nodes come back as **practice** after new material.
+- You can promote a node to deep at any time. Its evidence carries over. See [the design note](docs/design/breadth-mode.md).
 
 ### Quizzes and exercises
 
