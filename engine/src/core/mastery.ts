@@ -9,6 +9,8 @@ import { addDays, DAY_MS, iso } from "./util.ts";
  *     transfer, worked problem, derive), with at most one hint each, AND
  *   - passed again at least DELAYED_RECHECK_MS after the first of those passes
  *     (it survived a delayed re-check, so it isn't just short-term memory), AND
+ *   - passed at least one generative check (an exercise: they produced the
+ *     answer rather than picking it), AND
  *   - if the node requires it, passed a derive check that rebuilt it from all
  *     of its current prerequisites.
  */
@@ -17,9 +19,17 @@ export const DELAYED_RECHECK_MS = 20 * 3600_000;
 export const MAX_INTERVAL_DAYS = 90;
 const ASSUMED_FIRST_REVIEW_DAYS = 5;
 
-const isReal = (e: Evidence) => e.via !== "inferred";
+/**
+ * Right but unsure: a weak pass. It neither counts toward mastery nor breaks
+ * a run — the node keeps the status it had — and it brings the review closer.
+ */
+export const isTentative = (e: Evidence) => e.result === "correct" && e.confidence === "unsure";
+/** Direct evidence that decides status: not inferred, not tentative. */
+const isReal = (e: Evidence) => e.via !== "inferred" && !isTentative(e);
 /** A pass that counts toward mastery: correct and essentially unassisted. */
 const isCleanPass = (e: Evidence) => e.result === "correct" && (e.hints ?? 0) <= 1;
+/** The learner produced the answer rather than picking it. */
+const isGenerative = (e: Evidence) => e.via === "exercise";
 
 export function status(n: GraphNode): Status {
 	const real = n.evidence.filter(isReal);
@@ -66,14 +76,18 @@ function cleanRun(real: Evidence[]): Evidence[] {
 	return real.slice(lastFail + 1).filter(isCleanPass);
 }
 
-function missingForMastery(n: GraphNode, real: Evidence[]): { kinds?: Check[]; delayed?: true; derive?: true } {
+type Missing = { kinds?: Check[]; delayed?: true; generative?: true; derive?: true };
+
+function missingForMastery(n: GraphNode, real: Evidence[]): Missing {
 	const run = cleanRun(real);
-	const out: { kinds?: Check[]; delayed?: true; derive?: true } = {};
+	const out: Missing = {};
 	const kinds = new Set<Check>(run.map((e) => e.check));
 	if (kinds.size < MIN_CHECK_KINDS) out.kinds = (["recall", "transfer", "worked", "derive"] as Check[]).filter((k) => !kinds.has(k));
 	const first = run[0] ? Date.parse(run[0].at) : Number.POSITIVE_INFINITY;
 	if (!run.some((e) => Date.parse(e.at) - first >= DELAYED_RECHECK_MS)) out.delayed = true;
 	if (requiresDerive(n) && !run.some((e) => e.check === "derive" && coversPrereqs(n, e))) out.derive = true;
+	// A derive pass is an exercise, so it satisfies this too.
+	else if (!run.some(isGenerative)) out.generative = true;
 	return out;
 }
 
@@ -105,6 +119,7 @@ export function masteryGap(n: GraphNode, _now?: Date): string | undefined {
 	// A derive pass is also a new kind of check, so it may close both gaps.
 	const have = 4 - (m.kinds?.length ?? 0);
 	if (m.kinds && !(m.derive && have + 1 >= MIN_CHECK_KINDS)) needs.push(`a ${m.kinds.join(" or ")} check`);
+	if (m.generative) needs.push(`a free-response exercise (${n.kind === "practice" ? "solving it" : "stating or working it themselves"})`);
 	if (m.delayed) needs.push("a re-check on a later day");
 	return needs.length ? `needs ${needs.join(" and ")}` : undefined;
 }
@@ -120,6 +135,12 @@ export function record(n: GraphNode, ev: Evidence, now: Date): void {
 	const cur = n.review?.interval ?? 0;
 	const wasDue = !n.review || Date.parse(n.review.due) - now.getTime() <= DAY_MS / 2;
 	const hints = ev.hints ?? 0;
+	if (isTentative(ev)) {
+		// Hold the interval; come back in half of it.
+		const interval = Math.max(cur, 1);
+		n.review = { interval, due: iso(addDays(now, Math.max(1, Math.floor(interval / 2)))) };
+		return;
+	}
 	let interval: number;
 	if (ev.result === "wrong") interval = 0;
 	else if (ev.result === "partial" || hints >= 2) interval = Math.max(1, Math.floor(cur / 2));

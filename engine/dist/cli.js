@@ -131,8 +131,10 @@ function topoOrder(g) {
 // src/core/mastery.ts
 var MIN_CHECK_KINDS = 2;
 var DELAYED_RECHECK_MS = 20 * 36e5;
-var isReal = (e) => e.via !== "inferred";
+var isTentative = (e) => e.result === "correct" && e.confidence === "unsure";
+var isReal = (e) => e.via !== "inferred" && !isTentative(e);
 var isCleanPass = (e) => e.result === "correct" && (e.hints ?? 0) <= 1;
+var isGenerative = (e) => e.via === "exercise";
 function status(n) {
   const real = n.evidence.filter(isReal);
   if (real.length === 0) {
@@ -175,6 +177,7 @@ function missingForMastery(n, real) {
   const first = run[0] ? Date.parse(run[0].at) : Number.POSITIVE_INFINITY;
   if (!run.some((e) => Date.parse(e.at) - first >= DELAYED_RECHECK_MS)) out.delayed = true;
   if (requiresDerive(n) && !run.some((e) => e.check === "derive" && coversPrereqs(n, e))) out.derive = true;
+  else if (!run.some(isGenerative)) out.generative = true;
   return out;
 }
 function meetsMasteryBar(n, real) {
@@ -198,6 +201,7 @@ function masteryGap(n, _now) {
   if (m.derive) needs.push(`a derive check rebuilding it from ${n.prereqs.join(", ")}`);
   const have = 4 - (m.kinds?.length ?? 0);
   if (m.kinds && !(m.derive && have + 1 >= MIN_CHECK_KINDS)) needs.push(`a ${m.kinds.join(" or ")} check`);
+  if (m.generative) needs.push(`a free-response exercise (${n.kind === "practice" ? "solving it" : "stating or working it themselves"})`);
   if (m.delayed) needs.push("a re-check on a later day");
   return needs.length ? `needs ${needs.join(" and ")}` : void 0;
 }
@@ -690,7 +694,7 @@ function renderQuizResult(r) {
   const chosen = grade.chosen ?? [];
   const correct = grade.correct ?? [];
   const ok = grade.result === "correct";
-  const lines = ok ? [`[!success] \u2713 Correct \u2014 ${chosen.join(", ")}`] : chosen.length === 1 && chosen[0] === "I don't know" ? [`[!failure] ? Didn't know \u2014 that's useful to find out`, `**Answer:** ${correct.join(", ")}`] : [`[!failure] \u2717 Not quite \u2014 you chose ${chosen.join(", ") || "nothing"}`, `**Answer:** ${correct.join(", ")}`];
+  const lines = ok ? [grade.tentative ? `[!success] \u2713 Correct, but unsure \u2014 ${chosen.join(", ")}. It'll come back for review sooner.` : `[!success] \u2713 Correct \u2014 ${chosen.join(", ")}`] : chosen.length === 1 && chosen[0] === "I don't know" ? [`[!failure] ? Didn't know \u2014 that's useful to find out`, `**Answer:** ${correct.join(", ")}`] : [`[!failure] \u2717 Not quite \u2014 you chose ${chosen.join(", ") || "nothing"}${grade.confidence === "sure" ? " (and were sure)" : ""}`, `**Answer:** ${correct.join(", ")}`];
   if (grade.explanation) lines.push("", String(grade.explanation));
   return quote(lines.join("\n"));
 }

@@ -36810,8 +36810,10 @@ var MIN_CHECK_KINDS = 2;
 var DELAYED_RECHECK_MS = 20 * 36e5;
 var MAX_INTERVAL_DAYS = 90;
 var ASSUMED_FIRST_REVIEW_DAYS = 5;
-var isReal = (e) => e.via !== "inferred";
+var isTentative = (e) => e.result === "correct" && e.confidence === "unsure";
+var isReal = (e) => e.via !== "inferred" && !isTentative(e);
 var isCleanPass = (e) => e.result === "correct" && (e.hints ?? 0) <= 1;
+var isGenerative = (e) => e.via === "exercise";
 function status(n) {
   const real = n.evidence.filter(isReal);
   if (real.length === 0) {
@@ -36854,6 +36856,7 @@ function missingForMastery(n, real) {
   const first = run2[0] ? Date.parse(run2[0].at) : Number.POSITIVE_INFINITY;
   if (!run2.some((e) => Date.parse(e.at) - first >= DELAYED_RECHECK_MS)) out.delayed = true;
   if (requiresDerive(n) && !run2.some((e) => e.check === "derive" && coversPrereqs(n, e))) out.derive = true;
+  else if (!run2.some(isGenerative)) out.generative = true;
   return out;
 }
 function meetsMasteryBar(n, real) {
@@ -36877,6 +36880,7 @@ function masteryGap(n, _now) {
   if (m.derive) needs.push(`a derive check rebuilding it from ${n.prereqs.join(", ")}`);
   const have = 4 - (m.kinds?.length ?? 0);
   if (m.kinds && !(m.derive && have + 1 >= MIN_CHECK_KINDS)) needs.push(`a ${m.kinds.join(" or ")} check`);
+  if (m.generative) needs.push(`a free-response exercise (${n.kind === "practice" ? "solving it" : "stating or working it themselves"})`);
   if (m.delayed) needs.push("a re-check on a later day");
   return needs.length ? `needs ${needs.join(" and ")}` : void 0;
 }
@@ -36885,6 +36889,11 @@ function record2(n, ev, now) {
   const cur = n.review?.interval ?? 0;
   const wasDue = !n.review || Date.parse(n.review.due) - now.getTime() <= DAY_MS / 2;
   const hints = ev.hints ?? 0;
+  if (isTentative(ev)) {
+    const interval2 = Math.max(cur, 1);
+    n.review = { interval: interval2, due: iso(addDays(now, Math.max(1, Math.floor(interval2 / 2)))) };
+    return;
+  }
   let interval;
   if (ev.result === "wrong") interval = 0;
   else if (ev.result === "partial" || hints >= 2) interval = Math.max(1, Math.floor(cur / 2));
@@ -37216,27 +37225,36 @@ function resolveSelection(quiz, selected) {
   }
   return [...out].sort((a, b) => a - b);
 }
-function gradeQuiz(a, g, quizId, chosen, now) {
+var asksConfidence = (purpose) => purpose === "probe" || purpose === "review";
+function gradeQuiz(a, g, quizId, chosen, now, confidence) {
   const quiz = a.quizzes[quizId];
   if (!quiz) throw new Error(`unknown or already-graded quiz "${quizId}"`);
+  const conf = asksConfidence(quiz.purpose) && chosen.length ? confidence : void 0;
   const right = chosen.length === quiz.correct.length && chosen.every((c, i) => c === quiz.correct[i]);
   const result = right ? "correct" : "wrong";
   const wrongPicks = chosen.filter((c) => !quiz.correct.includes(c));
-  const misconception = wrongPicks.map((c) => quiz.options[c]?.misconception).find(Boolean);
   const show = (i) => `${letter(i)}. ${quiz.options[i].label}`;
+  let misconception = wrongPicks.map((c) => quiz.options[c]?.misconception).find(Boolean);
+  if (!misconception && !right && conf === "sure") misconception = `confidently chose "${wrongPicks.map(show).join(", ")}"`;
   const grade = {
     quiz: quiz.id,
     result,
     chosen: chosen.length ? chosen.map(show) : ["I don't know"],
     correct: quiz.correct.map(show),
     explanation: quiz.explanation,
-    misconception: right ? void 0 : misconception
+    misconception: right ? void 0 : misconception,
+    ...conf ? { confidence: conf } : {},
+    ...right && conf === "unsure" ? { tentative: true } : {}
   };
   if (quiz.node && g?.nodes[quiz.node]) {
     const n = getNode(g, quiz.node);
-    record2(n, { at: iso(now), via: "quiz", purpose: quiz.purpose, check: quiz.check, result, misconception: grade.misconception, ref: quiz.id }, now);
+    record2(
+      n,
+      { at: iso(now), via: "quiz", purpose: quiz.purpose, check: quiz.check, result, ...conf ? { confidence: conf } : {}, misconception: grade.misconception, ref: quiz.id },
+      now
+    );
     grade.node = n.id;
-    if (right && quiz.infer) {
+    if (right && quiz.infer && conf !== "unsure") {
       const inferred = inferAncestors(g, n.id, now, quiz.id);
       if (inferred.length) grade.inferred = inferred;
     }
@@ -38277,6 +38295,15 @@ server.registerTool(
     return json2({ node: node2, status: status(getNode(g, node2)) });
   })
 );
+var CONFIDENCE_FIELD = {
+  type: "string",
+  title: "How sure were you?",
+  oneOf: [
+    { const: "sure", title: "Sure" },
+    { const: "unsure", title: "Unsure" }
+  ]
+};
+var readConfidence = (v) => v === "sure" || v === "unsure" ? v : void 0;
 async function elicit(quiz) {
   if (process.env.LEARN_QUIZ_UI !== "picker") return "unavailable";
   if (!server.server.getClientCapabilities()?.elicitation) return "unavailable";
@@ -38286,27 +38313,28 @@ async function elicit(quiz) {
     return latexToUnicode(`${letter(i)}. ${o.label}${o.description ? ` \u2014 ${o.description}` : ""}`);
   };
   try {
+    const conf = asksConfidence(quiz.purpose) ? { confidence: CONFIDENCE_FIELD } : {};
     if (!quiz.multi) {
       const res2 = await server.server.elicitInput({
         message,
         requestedSchema: {
           type: "object",
-          properties: { answer: { type: "string", title: "Your answer", oneOf: quiz.options.map((_, i) => ({ const: letter(i), title: title(i) })) } },
+          properties: { answer: { type: "string", title: "Your answer", oneOf: quiz.options.map((_, i) => ({ const: letter(i), title: title(i) })) }, ...conf },
           required: ["answer"]
         }
       });
       if (res2.action === "decline") return "declined";
       if (res2.action !== "accept" || !res2.content) return "unavailable";
-      return resolveSelection(quiz, [String(res2.content.answer)]);
+      return { chosen: resolveSelection(quiz, [String(res2.content.answer)]), confidence: readConfidence(res2.content.confidence) };
     }
-    const properties = {};
+    const properties = { ...conf };
     quiz.options.forEach((_, i) => properties[letter(i)] = { type: "boolean", title: title(i), default: false });
     const res = await server.server.elicitInput({ message: `${message}
 
 (Select all that apply.)`, requestedSchema: { type: "object", properties } });
     if (res.action === "decline") return "declined";
     if (res.action !== "accept" || !res.content) return "unavailable";
-    return quiz.options.map((_, i) => i).filter((i) => res.content[letter(i)] === true);
+    return { chosen: quiz.options.map((_, i) => i).filter((i) => res.content[letter(i)] === true), confidence: readConfidence(res.content.confidence) };
   } catch {
     return "unavailable";
   }
@@ -38315,7 +38343,8 @@ function finishGrade(grade) {
   return {
     status: "graded",
     grade,
-    ...grade.result === "wrong" ? { teacher_note: "Probe the miss before moving on: slip, narrow gap, or misconception?" } : {}
+    ...grade.result === "wrong" ? { teacher_note: "Probe the miss before moving on: slip, narrow gap, or misconception?" } : {},
+    ...grade.tentative ? { teacher_note: "Right but unsure: don't treat it as known. It comes back for review sooner; consider a quick follow-up from a different angle." } : {}
   };
 }
 server.registerTool(
@@ -38346,7 +38375,7 @@ server.registerTool(
       return json2({
         status: "pending",
         quiz: quiz.id,
-        instructions: "Pass `ask` to AskUserQuestion exactly as given (terminal-friendly: math converted to Unicode). Then call quiz_answer with the label they picked. If they choose Other and say they don't know, pass selected: []. If AskUserQuestion is unavailable, show the same lettered options in chat.",
+        instructions: "Pass `ask` to AskUserQuestion exactly as given (terminal-friendly: math converted to Unicode). Then call quiz_answer with the label they picked" + (asksConfidence(quiz.purpose) ? " and their answer to the confidence question (confidence: sure | unsure)" : "") + ". If they choose Other and say they don't know, pass selected: []. If AskUserQuestion is unavailable, show the same lettered options in chat" + (asksConfidence(quiz.purpose) ? ", then ask Sure or Unsure" : "") + ".",
         ask: {
           questions: [
             {
@@ -38357,7 +38386,18 @@ server.registerTool(
                 label: latexToUnicode(`${letter(i)}. ${o.label}`),
                 description: o.description ? latexToUnicode(o.description) : ""
               }))
-            }
+            },
+            ...asksConfidence(quiz.purpose) ? [
+              {
+                question: "How sure were you of that answer?",
+                header: "Confidence",
+                multiSelect: false,
+                options: [
+                  { label: "Sure", description: "I knew it" },
+                  { label: "Unsure", description: "Partly a guess" }
+                ]
+              }
+            ] : []
           ]
         }
       });
@@ -38369,7 +38409,7 @@ server.registerTool(
       return json2({ status: "skipped", quiz: quiz.id, note: "The learner declined this question. Don't re-ask it; ask whether they want to skip ahead or try a different angle." });
     }
     const g2 = loadGraph(c);
-    const grade = gradeQuiz(a2, g2, quiz.id, picked, /* @__PURE__ */ new Date());
+    const grade = gradeQuiz(a2, g2, quiz.id, picked.chosen, /* @__PURE__ */ new Date(), picked.confidence);
     saveAssess(c, a2);
     saveGraph(c, g2, /* @__PURE__ */ new Date());
     return json2(finishGrade(grade));
@@ -38378,17 +38418,21 @@ server.registerTool(
 server.registerTool(
   "quiz_answer",
   {
-    description: "Grade a pending quiz with the learner's selection (labels or letters exactly as they picked them). Empty selected = they don't know (graded as a miss, which is honest and useful).",
-    inputSchema: { quiz: external_exports.string(), selected: external_exports.array(external_exports.string()) }
+    description: "Grade a pending quiz with the learner's selection (labels or letters exactly as they picked them). Empty selected = they don't know (graded as a miss, which is honest and useful). For probes and reviews, pass their confidence: right + unsure is tentative (no mastery credit, review comes sooner); wrong + sure is recorded as a misconception.",
+    inputSchema: {
+      quiz: external_exports.string(),
+      selected: external_exports.array(external_exports.string()),
+      confidence: external_exports.enum(["sure", "unsure"]).optional().describe("Probes and reviews: the learner's answer to the confidence question. Ignored for checks.")
+    }
   },
-  tool(({ quiz: id, selected }) => {
+  tool(({ quiz: id, selected, confidence }) => {
     const c = ctx();
     const now = /* @__PURE__ */ new Date();
     const g = loadGraph(c);
     const a = loadAssess(c);
     const quiz = a.quizzes[id];
     if (!quiz) throw new Error(`unknown or already-graded quiz "${id}"`);
-    const grade = gradeQuiz(a, g, id, resolveSelection(quiz, selected), now);
+    const grade = gradeQuiz(a, g, id, resolveSelection(quiz, selected), now, confidence);
     saveAssess(c, a);
     saveGraph(c, g, now);
     return json2(finishGrade(grade));

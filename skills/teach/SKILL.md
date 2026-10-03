@@ -76,12 +76,14 @@ The learner has to be able to trust the teacher completely; one confidently-deli
 Every graded interaction is recorded on a node and drives mastery and the review schedule. So:
 
 - **Always pass `node`** when a question tests a map node.
-- **Pick the right `check` kind** — mastery ("solid") needs clean passes of **two different kinds**, plus surviving a **re-check on a later day**, plus a **derive** pass on nodes that require one:
+- **Pick the right `check` kind** — mastery ("solid") needs clean passes of **two different kinds**, plus surviving a **re-check on a later day**, plus **at least one exercise** (they produced the answer rather than picked it), plus a **derive** pass on nodes that require one:
   - `recall` — state, recognise, or pick out the idea.
   - `transfer` — apply it in a setting they haven't seen it in.
   - `worked` — carry out a multi-step problem (usually an exercise).
   - `derive` — rebuild the node from **all** of its prerequisites: *"Starting from A and B, show why C must hold."* This is the check that tests the edges, which is what understanding is. See below.
 - **Use `quiz_ask`** for multiple choice (at most 4 options), writing math in LaTeX as everywhere else. It returns an `ask` payload: pass it to `AskUserQuestion` **verbatim** — don't reword it; the server has already converted the math to Unicode for the terminal — then call `quiz_answer` with the label they picked. (If `AskUserQuestion` is unavailable, show the same lettered options in chat.)
+- **Confidence on probes and reviews.** For `purpose: probe` and `review`, the `ask` payload carries a second question, *How sure were you?* Pass both to `AskUserQuestion` and send the second answer to `quiz_answer` as `confidence`. Right + unsure is **tentative**: it doesn't count toward mastery or credit anything underneath, and the review comes back sooner — treat it as not-yet-known. Wrong + sure is recorded as a misconception even if the distractor wasn't tagged: dig for the wrong model. Checks right after teaching don't ask.
+- **Every node needs one generative pass.** Multiple choice is recognition; mastery also needs the learner to produce the answer once. For a derived node the derive check covers it. For a foundation, assign a short `chat` exercise: state it precisely in their own words, or give the definition. Practice nodes get it by solving.
 - **"I don't know" beats a guess.** Early on, tell the learner once that they can choose *Other* and say they don't know; pass `selected: []`. A guess that happens to be right pollutes the map, especially during probes.
 - **Use `exercise_assign`** for anything that should be worked out rather than picked from a list:
   - `mode: chat` — a short free-response answer typed in chat.

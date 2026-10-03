@@ -104,10 +104,10 @@ export function renderQuizResult(r: Record<string, unknown>): string | undefined
 	const correct = (grade.correct as string[] | undefined) ?? [];
 	const ok = grade.result === "correct";
 	const lines = ok
-		? [`[!success] ✓ Correct — ${chosen.join(", ")}`]
+		? [grade.tentative ? `[!success] ✓ Correct, but unsure — ${chosen.join(", ")}. It'll come back for review sooner.` : `[!success] ✓ Correct — ${chosen.join(", ")}`]
 		: chosen.length === 1 && chosen[0] === "I don't know"
 			? [`[!failure] ? Didn't know — that's useful to find out`, `**Answer:** ${correct.join(", ")}`]
-			: [`[!failure] ✗ Not quite — you chose ${chosen.join(", ") || "nothing"}`, `**Answer:** ${correct.join(", ")}`];
+			: [`[!failure] ✗ Not quite — you chose ${chosen.join(", ") || "nothing"}${grade.confidence === "sure" ? " (and were sure)" : ""}`, `**Answer:** ${correct.join(", ")}`];
 	if (grade.explanation) lines.push("", String(grade.explanation));
 	return quote(lines.join("\n"));
 }

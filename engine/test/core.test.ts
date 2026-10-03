@@ -52,6 +52,8 @@ describe("mastery", () => {
 		record(n, pass(hours(T0, 1), "transfer"), hours(T0, 1));
 		assert.equal(status(n), "passing", "same-day passes aren't enough");
 		record(n, pass(hours(T0, 26), "recall"), hours(T0, 26));
+		assert.equal(status(n), "passing", "multiple choice alone never reaches solid");
+		record(n, pass(hours(T0, 27), "recall", { via: "exercise" }), hours(T0, 27));
 		assert.equal(status(n), "solid");
 	});
 
@@ -71,7 +73,7 @@ describe("mastery", () => {
 	it("a miss resets the run; a named misconception is its own status", () => {
 		const n = sampleGraph().nodes.vectors!;
 		record(n, pass(T0, "recall"), T0);
-		record(n, pass(hours(T0, 30), "transfer"), hours(T0, 30));
+		record(n, pass(hours(T0, 30), "transfer", { via: "exercise" }), hours(T0, 30));
 		assert.equal(status(n), "solid");
 		record(n, { ...pass(hours(T0, 60), "transfer"), result: "wrong", misconception: "thinks vectors are arrows only" }, hours(T0, 60));
 		assert.equal(status(n), "misconception");

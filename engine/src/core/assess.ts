@@ -1,6 +1,6 @@
 import { getNode } from "./graph.ts";
 import { inferAncestors, record, status } from "./mastery.ts";
-import type { AssessState, Check, Exercise, ExerciseMode, Graph, LinkResult, Purpose, Quiz, QuizOption, Result, Status } from "./types.ts";
+import type { AssessState, Check, Confidence, Exercise, ExerciseMode, Graph, LinkResult, Purpose, Quiz, QuizOption, Result, Status } from "./types.ts";
 import { latexToUnicode } from "./plaintext.ts";
 import { iso, letter } from "./util.ts";
 
@@ -81,19 +81,28 @@ export interface QuizGrade {
 	correct: string[];
 	explanation?: string;
 	misconception?: string;
+	confidence?: Confidence;
+	/** Right but unsure: doesn't count toward mastery or credit ancestors. */
+	tentative?: true;
 	node?: string;
 	status?: Status;
 	inferred?: string[];
 }
 
-export function gradeQuiz(a: AssessState, g: Graph | undefined, quizId: string, chosen: number[], now: Date): QuizGrade {
+/** Confidence is only asked on probes and reviews; the check after teaching skips it. */
+export const asksConfidence = (purpose: Purpose) => purpose === "probe" || purpose === "review";
+
+export function gradeQuiz(a: AssessState, g: Graph | undefined, quizId: string, chosen: number[], now: Date, confidence?: Confidence): QuizGrade {
 	const quiz = a.quizzes[quizId];
 	if (!quiz) throw new Error(`unknown or already-graded quiz "${quizId}"`);
+	const conf = asksConfidence(quiz.purpose) && chosen.length ? confidence : undefined;
 	const right = chosen.length === quiz.correct.length && chosen.every((c, i) => c === quiz.correct[i]);
 	const result: Result = right ? "correct" : "wrong";
 	const wrongPicks = chosen.filter((c) => !quiz.correct.includes(c));
-	const misconception = wrongPicks.map((c) => quiz.options[c]?.misconception).find(Boolean);
 	const show = (i: number) => `${letter(i)}. ${quiz.options[i]!.label}`;
+	let misconception = wrongPicks.map((c) => quiz.options[c]?.misconception).find(Boolean);
+	// Sure and wrong is a confidently held wrong model, tagged or not.
+	if (!misconception && !right && conf === "sure") misconception = `confidently chose "${wrongPicks.map(show).join(", ")}"`;
 	const grade: QuizGrade = {
 		quiz: quiz.id,
 		result,
@@ -101,12 +110,19 @@ export function gradeQuiz(a: AssessState, g: Graph | undefined, quizId: string, 
 		correct: quiz.correct.map(show),
 		explanation: quiz.explanation,
 		misconception: right ? undefined : misconception,
+		...(conf ? { confidence: conf } : {}),
+		...(right && conf === "unsure" ? { tentative: true } : {}),
 	};
 	if (quiz.node && g?.nodes[quiz.node]) {
 		const n = getNode(g, quiz.node);
-		record(n, { at: iso(now), via: "quiz", purpose: quiz.purpose, check: quiz.check, result, misconception: grade.misconception, ref: quiz.id }, now);
+		record(
+			n,
+			{ at: iso(now), via: "quiz", purpose: quiz.purpose, check: quiz.check, result, ...(conf ? { confidence: conf } : {}), misconception: grade.misconception, ref: quiz.id },
+			now,
+		);
 		grade.node = n.id;
-		if (right && quiz.infer) {
+		// A lucky guess mustn't credit a whole subtree.
+		if (right && quiz.infer && conf !== "unsure") {
 			const inferred = inferAncestors(g, n.id, now, quiz.id);
 			if (inferred.length) grade.inferred = inferred;
 		}

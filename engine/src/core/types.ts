@@ -16,6 +16,8 @@ export type NodeKind = "concept" | "practice";
 export type Check = "recall" | "transfer" | "worked" | "derive";
 export type Result = "correct" | "partial" | "wrong";
 export type Purpose = "probe" | "check" | "review";
+/** Self-rated after answering a probe or review. Right + unsure = tentative. */
+export type Confidence = "sure" | "unsure";
 
 export interface Evidence {
 	at: string; // ISO timestamp
@@ -23,6 +25,8 @@ export interface Evidence {
 	purpose: Purpose;
 	check: Check;
 	result: Result;
+	/** Probes and reviews only. */
+	confidence?: Confidence;
 	/** 0 = cold. 1 = a nudge. 2+ = substantial help (doesn't count toward mastery). */
 	hints?: number;
 	/** Named misconception this answer revealed, e.g. "confuses span with basis". */

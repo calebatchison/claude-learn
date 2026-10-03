@@ -2,7 +2,7 @@
 
 You can't teach into someone's zone of proximal development without knowing where its edges are. Probing is a **mapping job, not a spot-check**: locate the frontier where what they reliably know turns into what they don't, along every strand the teaching will depend on. It gets as long as it needs to. There is no rush.
 
-Use `quiz_ask` with `purpose: "probe"` and the `node` being probed. A correct probe automatically credits the node's unchecked prerequisites as *assumed* (you can't do the hard thing without the easy things under it); they get a light verification review later.
+Use `quiz_ask` with `purpose: "probe"` and the `node` being probed. Pass on their *Sure / Unsure* answer as `confidence`. A correct, sure probe automatically credits the node's unchecked prerequisites as *assumed* (you can't do the hard thing without the easy things under it); they get a light verification review later. A correct but unsure probe credits nothing — treat it as an edge, not a floor.
 
 ## The edge is only located when it's bracketed
 
