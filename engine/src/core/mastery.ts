@@ -1,5 +1,5 @@
 import { ancestors, getNode, nodeDepths } from "./graph.ts";
-import type { Check, Depth, Evidence, Graph, GraphNode, Status } from "./types.ts";
+import type { Check, Depth, Difficulty, Evidence, Graph, GraphNode, Status } from "./types.ts";
 import { addDays, DAY_MS, iso, ymd } from "./util.ts";
 
 /**
@@ -269,4 +269,13 @@ export function atRisk(g: Graph, st = statuses(g)): string[] {
 	return Object.values(g.nodes)
 		.filter((n) => isSatisfied(st.get(n.id)!) && n.prereqs.some((p) => needsRemediation(st.get(p)!)))
 		.map((n) => n.id);
+}
+
+export const DIFFICULTIES: Difficulty[] = ["easy", "medium", "hard"];
+
+/** Problems attempted on a node (exercises), and the difficulties seen. */
+export function problemCount(n: GraphNode): { problems: number; difficulties: Difficulty[] } {
+	const ex = n.evidence.filter((e) => e.via === "exercise");
+	const seen = new Set(ex.flatMap((e) => (e.difficulty ? [e.difficulty] : [])));
+	return { problems: ex.length, difficulties: DIFFICULTIES.filter((d) => seen.has(d)) };
 }

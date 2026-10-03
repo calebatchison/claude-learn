@@ -1,6 +1,6 @@
 import { depthOf, getNode } from "./graph.ts";
 import { creditPrereqs, inferAncestors, record, status } from "./mastery.ts";
-import type { AssessState, Check, Confidence, Evidence, Exercise, ExerciseMode, Graph, LinkResult, Purpose, Quiz, QuizOption, Result, Status } from "./types.ts";
+import type { AssessState, Check, Confidence, Difficulty, Evidence, Exercise, ExerciseMode, Graph, LinkResult, Purpose, Quiz, QuizOption, Result, Status } from "./types.ts";
 import { latexToUnicode } from "./plaintext.ts";
 import { iso, letter } from "./util.ts";
 
@@ -154,6 +154,7 @@ export interface ExerciseInput {
 	check?: Check;
 	/** Derive only: the prereq ids the rubric covers — must be all of the node's prereqs. */
 	covers?: string[];
+	difficulty?: Difficulty;
 }
 
 /** A derive exercise must rebuild the node from every one of its prereqs. */
@@ -191,6 +192,7 @@ export function assignExercise(a: AssessState, g: Graph | undefined, input: Exer
 		purpose: input.purpose ?? "check",
 		check: input.check ?? "worked",
 		...(covers ? { covers } : {}),
+		...(input.difficulty ? { difficulty: input.difficulty } : {}),
 		assigned: iso(now),
 		status: "pending",
 	};
@@ -248,6 +250,7 @@ export function submitExercise(
 			hints: input.hints ?? 0,
 			misconception: input.misconception,
 			...(links ? { links } : {}),
+			...(ex.difficulty ? { difficulty: ex.difficulty } : {}),
 			ref: ex.id,
 		};
 		const depth = depthOf(g, n.id);

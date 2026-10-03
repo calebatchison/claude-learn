@@ -20,7 +20,7 @@ import {
 	writeActive,
 } from "./core/context.ts";
 import { applyChanges, depthOf, getNode, nodeDepths } from "./core/graph.ts";
-import { markTaught, masteryGap, requiresDerive, status, statuses } from "./core/mastery.ts";
+import { markTaught, masteryGap, problemCount, requiresDerive, status, statuses } from "./core/mastery.ts";
 import { activeGoals, newGoalId, next, planGoal } from "./core/plan.ts";
 import { listNodes, renderMap } from "./core/render.ts";
 import { latexToUnicode } from "./core/plaintext.ts";
@@ -244,7 +244,7 @@ server.registerTool(
 			if (!id) throw new Error("scope=node needs id");
 			const n = getNode(g, id);
 			const d = nodeDepths(g).get(id)!;
-			return json({ ...n, depth: d.depth, ...(d.promotedBy ? { deep_because: d.promotedBy } : {}), status: status(n, d.depth), gap: masteryGap(n, now, d.depth) });
+			return json({ ...n, ...problemCount(n), depth: d.depth, ...(d.promotedBy ? { deep_because: d.promotedBy } : {}), status: status(n, d.depth), gap: masteryGap(n, now, d.depth) });
 		}
 		const recs = next(g, now, { count: 6 });
 		const around = new Set<string>();
@@ -579,6 +579,10 @@ server.registerTool(
 				.array(z.string())
 				.optional()
 				.describe("derive only: the node's prerequisite ids — must be all of them. The rubric says how each one is used."),
+			difficulty: z
+				.enum(["easy", "medium", "hard"])
+				.optional()
+				.describe("How hard the problem is. Tracked per node so breadth practice can vary it."),
 		},
 	},
 	tool((input: Parameters<typeof assignExercise>[2]) => {

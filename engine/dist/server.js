@@ -37027,6 +37027,12 @@ function isDue(n, now) {
 function atRisk(g, st = statuses(g)) {
   return Object.values(g.nodes).filter((n) => isSatisfied(st.get(n.id)) && n.prereqs.some((p) => needsRemediation(st.get(p)))).map((n) => n.id);
 }
+var DIFFICULTIES = ["easy", "medium", "hard"];
+function problemCount(n) {
+  const ex = n.evidence.filter((e) => e.via === "exercise");
+  const seen = new Set(ex.flatMap((e) => e.difficulty ? [e.difficulty] : []));
+  return { problems: ex.length, difficulties: DIFFICULTIES.filter((d) => seen.has(d)) };
+}
 
 // src/core/plaintext.ts
 var SYMBOLS = {
@@ -37408,6 +37414,7 @@ function assignExercise(a, g, input2, now) {
     purpose: input2.purpose ?? "check",
     check: input2.check ?? "worked",
     ...covers ? { covers } : {},
+    ...input2.difficulty ? { difficulty: input2.difficulty } : {},
     assigned: iso(now),
     status: "pending"
   };
@@ -37447,6 +37454,7 @@ function submitExercise(a, g, input2, now) {
       hints: input2.hints ?? 0,
       misconception: input2.misconception,
       ...links ? { links } : {},
+      ...ex.difficulty ? { difficulty: ex.difficulty } : {},
       ref: ex.id
     };
     const depth = depthOf(g, n.id);
@@ -37552,6 +37560,18 @@ function next(g, now, opts = {}) {
     const s = st.get(id);
     const base = s === "taught" ? "taught but never checked" : n.prereqs.length ? `ready \u2014 builds on ${n.prereqs.map(title).join(", ")}` : "ready \u2014 foundational";
     out.push({ action: "teach", node: id, title: n.title, status: s, reason: base + goalNote(id) });
+  }
+  const practice = ids.filter((id) => depths2.get(id)?.depth === "breadth" && st.get(id) === "solid").map((id) => ({ id, ...problemCount(getNode(g, id)) })).sort((a, b) => (goalRank.has(a.id) ? 0 : 1) - (goalRank.has(b.id) ? 0 : 1) || a.problems - b.problems || pos.get(a.id) - pos.get(b.id));
+  for (const p of practice) {
+    const untried = DIFFICULTIES.find((d) => !p.difficulties.includes(d) && (d !== "easy" || !p.problems));
+    const so = p.problems ? `${p.problems} problem${p.problems > 1 ? "s" : ""} so far${p.difficulties.length ? ` (${p.difficulties.join(", ")})` : ""}` : "covered, no problems yet";
+    out.push({
+      action: "practice",
+      node: p.id,
+      title: title(p.id),
+      status: st.get(p.id),
+      reason: `${so} \u2014 ${untried ? `try ${untried === "easy" ? "an" : "a"} ${untried} one` : "try a new variation"}` + goalNote(p.id)
+    });
   }
   if (out.length === 0) {
     const unsolid = ids.filter((id) => !isDone(g, id, st, depths2)).length;
@@ -38328,7 +38348,7 @@ server.registerTool(
       if (!id) throw new Error("scope=node needs id");
       const n = getNode(g, id);
       const d = nodeDepths(g).get(id);
-      return json2({ ...n, depth: d.depth, ...d.promotedBy ? { deep_because: d.promotedBy } : {}, status: status(n, d.depth), gap: masteryGap(n, now, d.depth) });
+      return json2({ ...n, ...problemCount(n), depth: d.depth, ...d.promotedBy ? { deep_because: d.promotedBy } : {}, status: status(n, d.depth), gap: masteryGap(n, now, d.depth) });
     }
     const recs = next(g, now, { count: 6 });
     const around = /* @__PURE__ */ new Set();
@@ -38611,7 +38631,8 @@ server.registerTool(
       node: external_exports.string().optional(),
       purpose: purposeSchema.optional(),
       check: checkSchema.optional().describe("default worked"),
-      covers: external_exports.array(external_exports.string()).optional().describe("derive only: the node's prerequisite ids \u2014 must be all of them. The rubric says how each one is used.")
+      covers: external_exports.array(external_exports.string()).optional().describe("derive only: the node's prerequisite ids \u2014 must be all of them. The rubric says how each one is used."),
+      difficulty: external_exports.enum(["easy", "medium", "hard"]).optional().describe("How hard the problem is. Tracked per node so breadth practice can vary it.")
     }
   },
   tool((input2) => {

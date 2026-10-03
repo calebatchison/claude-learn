@@ -20,6 +20,7 @@ export type ClassStyle = "depth" | "breadth" | "mix";
 export type Check = "recall" | "transfer" | "worked" | "derive";
 export type Result = "correct" | "partial" | "wrong";
 export type Purpose = "probe" | "check" | "review";
+export type Difficulty = "easy" | "medium" | "hard";
 /** Self-rated after answering a probe or review. Right + unsure = tentative. */
 export type Confidence = "sure" | "unsure";
 
@@ -38,6 +39,8 @@ export interface Evidence {
 	note?: string;
 	/** For a derive check: whether each prerequisite link held. */
 	links?: LinkResult[];
+	/** For an exercise: how hard the problem was. */
+	difficulty?: Difficulty;
 	/** Quiz / exercise id that produced it. */
 	ref?: string;
 }
@@ -187,6 +190,7 @@ export interface Exercise {
 	check: Check;
 	/** For a derive exercise: the prereq ids the rubric covers (all of them). */
 	covers?: string[];
+	difficulty?: Difficulty;
 	assigned: string;
 	status: "pending" | "submitted";
 	submitted?: string;

@@ -1,9 +1,9 @@
 import { ancestors, dependents, descendants, getNode, nodeDepths, topoOrder } from "./graph.ts";
-import { isDue, isSatisfied, masteryGap, needsRemediation, statuses } from "./mastery.ts";
+import { DIFFICULTIES, isDue, isSatisfied, masteryGap, needsRemediation, problemCount, statuses } from "./mastery.ts";
 import type { Goal, Graph, Status } from "./types.ts";
 import { calendarDaysBetween, iso, parseYmd } from "./util.ts";
 
-export type Action = "setup" | "probe" | "remediate" | "review" | "teach" | "done";
+export type Action = "setup" | "probe" | "remediate" | "review" | "teach" | "practice" | "done";
 
 export interface Recommendation {
 	action: Action;
@@ -142,6 +142,24 @@ export function next(g: Graph, now: Date, opts: PlanOptions = {}): Recommendatio
 		const base =
 			s === "taught" ? "taught but never checked" : n.prereqs.length ? `ready — builds on ${n.prereqs.map(title).join(", ")}` : "ready — foundational";
 		out.push({ action: "teach", node: id, title: n.title, status: s, reason: base + goalNote(id) });
+	}
+
+	// 4. Breadth is about seeing many problems: more practice on covered breadth
+	//    nodes, fewest problems first. New material above always comes first.
+	const practice = ids
+		.filter((id) => depths.get(id)?.depth === "breadth" && st.get(id) === "solid")
+		.map((id) => ({ id, ...problemCount(getNode(g, id)) }))
+		.sort((a, b) => (goalRank.has(a.id) ? 0 : 1) - (goalRank.has(b.id) ? 0 : 1) || a.problems - b.problems || pos.get(a.id)! - pos.get(b.id)!);
+	for (const p of practice) {
+		const untried = DIFFICULTIES.find((d) => !p.difficulties.includes(d) && (d !== "easy" || !p.problems));
+		const so = p.problems ? `${p.problems} problem${p.problems > 1 ? "s" : ""} so far${p.difficulties.length ? ` (${p.difficulties.join(", ")})` : ""}` : "covered, no problems yet";
+		out.push({
+			action: "practice",
+			node: p.id,
+			title: title(p.id),
+			status: st.get(p.id),
+			reason: `${so} — ${untried ? `try ${untried === "easy" ? "an" : "a"} ${untried} one` : "try a new variation"}` + goalNote(p.id),
+		});
 	}
 
 	if (out.length === 0) {

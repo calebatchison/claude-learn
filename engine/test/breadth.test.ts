@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { applyChanges, nodeDepths } from "../src/core/graph.ts";
-import { createQuiz, gradeQuiz } from "../src/core/assess.ts";
-import { creditPrereqs, FOLLOWUP_DAYS, record, status, statuses } from "../src/core/mastery.ts";
+import { assignExercise, createQuiz, gradeQuiz, submitExercise } from "../src/core/assess.ts";
+import { creditPrereqs, FOLLOWUP_DAYS, problemCount, record, status, statuses } from "../src/core/mastery.ts";
 import { goalClosure, next } from "../src/core/plan.ts";
 import { listNodes, renderMap } from "../src/core/render.ts";
 import type { Evidence, Graph } from "../src/core/types.ts";
@@ -123,5 +123,36 @@ describe("breadth grace", () => {
 		g.nodes.span!.taught = [T0.toISOString()];
 		assert.deepEqual(creditPrereqs(g, "span", pass(hours(T0, 48)), hours(T0, 48)), []);
 		assert.equal(g.nodes.vectors!.review!.due, due);
+	});
+});
+
+describe("variety", () => {
+	it("counts problems and difficulties per node", () => {
+		const g = styled("breadth");
+		const a = { counter: { quiz: 0, exercise: 0 }, quizzes: {}, exercises: {} };
+		for (const difficulty of ["easy", "easy", "medium"] as const) {
+			const ex = assignExercise(a, g, { node: "vectors", prompt: "p", solution: "s", difficulty }, T0);
+			submitExercise(a, g, { id: ex.id, result: "correct", feedback: "" }, T0);
+		}
+		assert.deepEqual(problemCount(g.nodes.vectors!), { problems: 3, difficulties: ["easy", "medium"] });
+	});
+
+	it("suggests practice on covered breadth nodes after new material, fewest problems first", () => {
+		const g = styled("breadth");
+		for (const id of ["vectors", "span"]) record(g.nodes[id]!, pass(T0), T0, "breadth");
+		g.nodes.vectors!.evidence.push(pass(T0, { via: "exercise", difficulty: "easy" }));
+		const recs = next(g, T0, { count: 10 });
+		const actions = recs.map((r) => r.action);
+		assert.ok(actions.lastIndexOf("teach") < actions.indexOf("practice"), "new material first");
+		const practice = recs.filter((r) => r.action === "practice");
+		assert.deepEqual(practice.map((r) => r.node), ["span", "vectors"]);
+		assert.match(practice[0]!.reason, /no problems yet — try an easy one/);
+		assert.match(practice[1]!.reason, /1 problem so far \(easy\) — try a medium one/);
+	});
+
+	it("deep classes get no practice suggestions", () => {
+		const g = sampleGraph();
+		record(g.nodes.vectors!, pass(T0), T0);
+		assert.ok(!next(g, T0, { count: 10 }).some((r) => r.action === "practice"));
 	});
 });
