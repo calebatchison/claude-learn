@@ -9,8 +9,11 @@ export type ContextKind = "class" | "workshop";
 export type Phase = "setup" | "placement" | "active";
 export type NodeKind = "concept" | "practice";
 
-/** What a piece of evidence tested. Mastery requires passes of 2+ kinds. */
-export type Check = "recall" | "transfer" | "worked";
+/**
+ * What a piece of evidence tested. Mastery requires passes of 2+ kinds.
+ * `derive` = rebuild the node from all of its prerequisites (free response).
+ */
+export type Check = "recall" | "transfer" | "worked" | "derive";
 export type Result = "correct" | "partial" | "wrong";
 export type Purpose = "probe" | "check" | "review";
 
@@ -25,8 +28,22 @@ export interface Evidence {
 	/** Named misconception this answer revealed, e.g. "confuses span with basis". */
 	misconception?: string;
 	note?: string;
+	/** For a derive check: whether each prerequisite link held. */
+	links?: LinkResult[];
 	/** Quiz / exercise id that produced it. */
 	ref?: string;
+}
+
+export interface LinkResult {
+	from: string; // prereq id
+	ok: boolean;
+}
+
+/** A map-time decision overriding whether a node needs a derive pass. */
+export interface DeriveRule {
+	required: boolean;
+	reason: string;
+	at: string;
 }
 
 export interface SourceRef {
@@ -53,6 +70,8 @@ export interface GraphNode {
 	taught?: string[];
 	evidence: Evidence[];
 	review?: { interval: number; due: string };
+	/** Overrides of the derive requirement, oldest first; the last one wins. */
+	deriveRules?: DeriveRule[];
 }
 
 export interface Unit {
@@ -147,6 +166,8 @@ export interface Exercise {
 	link?: string;
 	purpose: Purpose;
 	check: Check;
+	/** For a derive exercise: the prereq ids the rubric covers (all of them). */
+	covers?: string[];
 	assigned: string;
 	status: "pending" | "submitted";
 	submitted?: string;

@@ -146,19 +146,39 @@ function status(n) {
     if (onlyProbes && !n.taught?.length) return "unseen";
     return "shaky";
   }
-  return meetsMasteryBar(real) ? "solid" : "passing";
+  return meetsMasteryBar(n, real) ? "solid" : "passing";
 }
-function meetsMasteryBar(real) {
+function defaultRequiresDerive(n) {
+  return n.kind === "concept" && !n.foundational && n.prereqs.length > 0;
+}
+function requiresDerive(n) {
+  const rule = n.deriveRules?.at(-1);
+  if (rule) return rule.required && n.prereqs.length > 0;
+  return defaultRequiresDerive(n);
+}
+function coversPrereqs(n, e) {
+  const ok = new Set((e.links ?? []).filter((l) => l.ok).map((l) => l.from));
+  return n.prereqs.every((p) => ok.has(p));
+}
+function cleanRun(real) {
   let lastFail = -1;
   real.forEach((e, i) => {
     if (e.result !== "correct") lastFail = i;
   });
-  const run = real.slice(lastFail + 1).filter(isCleanPass);
-  if (run.length < 2) return false;
+  return real.slice(lastFail + 1).filter(isCleanPass);
+}
+function missingForMastery(n, real) {
+  const run = cleanRun(real);
+  const out = {};
   const kinds = new Set(run.map((e) => e.check));
-  if (kinds.size < MIN_CHECK_KINDS) return false;
-  const first = Date.parse(run[0].at);
-  return run.some((e) => Date.parse(e.at) - first >= DELAYED_RECHECK_MS);
+  if (kinds.size < MIN_CHECK_KINDS) out.kinds = ["recall", "transfer", "worked", "derive"].filter((k) => !kinds.has(k));
+  const first = run[0] ? Date.parse(run[0].at) : Number.POSITIVE_INFINITY;
+  if (!run.some((e) => Date.parse(e.at) - first >= DELAYED_RECHECK_MS)) out.delayed = true;
+  if (requiresDerive(n) && !run.some((e) => e.check === "derive" && coversPrereqs(n, e))) out.derive = true;
+  return out;
+}
+function meetsMasteryBar(n, real) {
+  return Object.keys(missingForMastery(n, real)).length === 0;
 }
 function isSatisfied(s) {
   return s === "passing" || s === "solid" || s === "assumed";
@@ -169,24 +189,16 @@ function needsRemediation(s) {
 function statuses(g) {
   return new Map(Object.values(g.nodes).map((n) => [n.id, status(n)]));
 }
-function masteryGap(n, now) {
+function masteryGap(n, _now) {
   const s = status(n);
   if (s === "solid") return void 0;
   if (s !== "passing") return void 0;
-  const real = n.evidence.filter(isReal);
-  let lastFail = -1;
-  real.forEach((e, i) => {
-    if (e.result !== "correct") lastFail = i;
-  });
-  const run = real.slice(lastFail + 1).filter(isCleanPass);
-  const kinds = new Set(run.map((e) => e.check));
+  const m = missingForMastery(n, n.evidence.filter(isReal));
   const needs = [];
-  if (kinds.size < MIN_CHECK_KINDS) {
-    const missing = ["recall", "transfer", "worked"].filter((k) => !kinds.has(k));
-    needs.push(`a ${missing.join(" or ")} check`);
-  }
-  const first = run[0] ? Date.parse(run[0].at) : now.getTime();
-  if (!run.some((e) => Date.parse(e.at) - first >= DELAYED_RECHECK_MS)) needs.push("a re-check on a later day");
+  if (m.derive) needs.push(`a derive check rebuilding it from ${n.prereqs.join(", ")}`);
+  const have = 4 - (m.kinds?.length ?? 0);
+  if (m.kinds && !(m.derive && have + 1 >= MIN_CHECK_KINDS)) needs.push(`a ${m.kinds.join(" or ")} check`);
+  if (m.delayed) needs.push("a re-check on a later day");
   return needs.length ? `needs ${needs.join(" and ")}` : void 0;
 }
 function isDue(n, now) {
@@ -242,14 +254,11 @@ function next(g, now, opts = {}) {
   const broken = ids.filter((id) => needsRemediation(st.get(id)) && ready(id)).sort(byPriority);
   for (const id of broken) {
     const s = st.get(id);
+    const last = [...getNode(g, id).evidence].reverse().find((e) => e.via !== "inferred");
     const misc = [...getNode(g, id).evidence].reverse().find((e) => e.misconception)?.misconception;
-    out.push({
-      action: "remediate",
-      node: id,
-      title: title(id),
-      status: s,
-      reason: (s === "misconception" ? `misconception to dislodge: "${misc}"` : "last check missed") + goalNote(id)
-    });
+    const broken2 = last?.check === "derive" ? (last.links ?? []).filter((l) => !l.ok).map((l) => title(l.from)) : [];
+    const why = s === "misconception" ? `misconception to dislodge: "${misc}"` : broken2.length ? `derive missed: couldn't get from ${broken2.join(" and ")} to ${title(id)} \u2014 re-teach that link` : "last check missed";
+    out.push({ action: "remediate", node: id, title: title(id), status: s, reason: why + goalNote(id) });
   }
   const due = ids.filter((id) => isSatisfied(st.get(id)) && isDue(getNode(g, id), now)).sort((a, b) => {
     const ga = goalRank.has(a) ? 0 : 1;

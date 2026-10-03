@@ -20,7 +20,7 @@ import {
 	writeActive,
 } from "./core/context.ts";
 import { applyChanges, getNode } from "./core/graph.ts";
-import { markTaught, masteryGap, status, statuses } from "./core/mastery.ts";
+import { markTaught, masteryGap, requiresDerive, status, statuses } from "./core/mastery.ts";
 import { activeGoals, newGoalId, next, planGoal } from "./core/plan.ts";
 import { listNodes, renderMap } from "./core/render.ts";
 import { latexToUnicode } from "./core/plaintext.ts";
@@ -85,9 +85,14 @@ const optionSchema = z.object({
 	description: z.string().optional().describe("Rarely needed. Must not give the answer away."),
 	misconception: z.string().optional().describe("For a distractor: the misconception someone picking it holds. Recorded on the node if picked."),
 });
-const checkSchema = z
+const quizCheckSchema = z
 	.enum(["recall", "transfer", "worked"])
 	.describe("recall = state/recognise it; transfer = apply it in an unfamiliar setting; worked = carry out a multi-step problem");
+const checkSchema = z
+	.enum(["recall", "transfer", "worked", "derive"])
+	.describe(
+		"recall = state it in their own words; transfer = apply it in an unfamiliar setting; worked = carry out a multi-step problem; derive = rebuild the node from ALL its prerequisites (needs covers + rubric)",
+	);
 const purposeSchema = z.enum(["probe", "check", "review"]).describe("probe = placement/mapping; check = after teaching; review = spaced re-verification");
 
 server.registerTool(
@@ -260,6 +265,13 @@ const nodeUpsert = z.object({
 	foundational: z.boolean().optional().describe("An unconditional truth the teaching is founded on."),
 	sources: z.array(z.object({ file: z.string(), page: z.string().optional(), note: z.string().optional() })).optional(),
 	links: z.array(z.string()).optional(),
+	requires_derive: z
+		.boolean()
+		.optional()
+		.describe(
+			"Override whether mastering this node needs a derive pass. Default: required for concept nodes with prereqs that aren't foundational; not for foundational or practice nodes. Needs derive_reason; every override is logged.",
+		),
+	derive_reason: z.string().optional().describe("Why this node departs from the default derive rule (required with requires_derive)."),
 });
 const edge = z.object({ from: z.string().describe("prereq"), to: z.string().describe("dependent") });
 
@@ -293,7 +305,18 @@ server.registerTool(
 			// One overview diagram — the unit map for big graphs, the whole map for small ones.
 			const map = renderMap(graph, now);
 			const section = /## (?:Units|Map)\n[\s\S]*?(```mermaid[\s\S]*?```)/.exec(map)?.[1];
-			return json({ dry_run: true, would: s, preview: section ?? "(empty map)", note: "Show the learner this one diagram; the full detail lives in map.md." });
+			const nodes = Object.values(graph.nodes);
+			const derive = {
+				required: nodes.filter(requiresDerive).map((n) => n.id),
+				overrides: nodes.filter((n) => n.deriveRules?.length).map((n) => ({ id: n.id, required: n.deriveRules!.at(-1)!.required, reason: n.deriveRules!.at(-1)!.reason })),
+			};
+			return json({
+				dry_run: true,
+				would: s,
+				preview: section ?? "(empty map)",
+				derive,
+				note: "Show the learner this one diagram, and which nodes need a derive pass (and any overrides with their reasons); the full detail lives in map.md.",
+			});
 		}
 		saveGraph(c, graph, now);
 		return json({ applied: s, phase: graph.phase, nodes: Object.keys(graph.nodes).length });
@@ -403,7 +426,7 @@ server.registerTool(
 			context: z.string().optional().describe("Optional setup shown above the options."),
 			node: z.string().optional().describe("Node this tests. Omit only for questions not tied to the map."),
 			purpose: purposeSchema.optional(),
-			check: checkSchema.optional(),
+			check: quizCheckSchema.optional(),
 			infer: z.boolean().optional().describe("On a correct probe, credit unchecked ancestors as assumed (default true for probes)."),
 		},
 	},
@@ -486,6 +509,10 @@ server.registerTool(
 			node: z.string().optional(),
 			purpose: purposeSchema.optional(),
 			check: checkSchema.optional().describe("default worked"),
+			covers: z
+				.array(z.string())
+				.optional()
+				.describe("derive only: the node's prerequisite ids — must be all of them. The rubric says how each one is used."),
 		},
 	},
 	tool((input: Parameters<typeof assignExercise>[2]) => {
@@ -532,6 +559,10 @@ server.registerTool(
 			misconception: z.string().optional().describe("Name the wrong model if the work revealed one."),
 			feedback: z.string().describe("What was right, where it went wrong (which step), what to fix. Shown in the log."),
 			submission: z.string().optional().describe("Path of the submitted file, if any."),
+			links: z
+				.array(z.object({ from: z.string(), ok: z.boolean() }))
+				.optional()
+				.describe("derive only: for every covered prerequisite, whether the learner's derivation used that link correctly."),
 		},
 	},
 	tool((input: Parameters<typeof submitExercise>[2]) => {

@@ -76,10 +76,11 @@ The learner has to be able to trust the teacher completely; one confidently-deli
 Every graded interaction is recorded on a node and drives mastery and the review schedule. So:
 
 - **Always pass `node`** when a question tests a map node.
-- **Pick the right `check` kind** — mastery ("solid") needs clean passes of **two different kinds**, plus surviving a **re-check on a later day**:
+- **Pick the right `check` kind** — mastery ("solid") needs clean passes of **two different kinds**, plus surviving a **re-check on a later day**, plus a **derive** pass on nodes that require one:
   - `recall` — state, recognise, or pick out the idea.
   - `transfer` — apply it in a setting they haven't seen it in.
   - `worked` — carry out a multi-step problem (usually an exercise).
+  - `derive` — rebuild the node from **all** of its prerequisites: *"Starting from A and B, show why C must hold."* This is the check that tests the edges, which is what understanding is. See below.
 - **Use `quiz_ask`** for multiple choice (at most 4 options), writing math in LaTeX as everywhere else. It returns an `ask` payload: pass it to `AskUserQuestion` **verbatim** — don't reword it; the server has already converted the math to Unicode for the terminal — then call `quiz_answer` with the label they picked. (If `AskUserQuestion` is unavailable, show the same lettered options in chat.)
 - **"I don't know" beats a guess.** Early on, tell the learner once that they can choose *Other* and say they don't know; pass `selected: []`. A guess that happens to be right pollutes the map, especially during probes.
 - **Use `exercise_assign`** for anything that should be worked out rather than picked from a list:
@@ -87,6 +88,7 @@ Every graded interaction is recorded on a node and drives mastery and the review
   - `mode: paper` — derivations, proofs, hand computation. They can paste a photo or drop it into `submissions/`; `Read` the image and grade the *work*, step by step, not just the final answer.
   - `mode: external` — e.g. a LeetCode problem (put the URL in `link`). Grade the code they bring back for correctness, complexity, and edge cases.
   Grade with `exercise_list({id})` (it returns your stored solution and rubric, even in a later session), then `exercise_submit` with `result`, `hints` (be honest — 2+ means substantial help and won't count toward mastery), any `misconception` the work revealed, and specific `feedback` (which step went wrong and why).
+- **Derive checks** are always free response: `exercise_assign` with `check: "derive"`, `mode: chat` or `paper`, `covers` = every prerequisite of the node, and a rubric that says how each prerequisite is used. Write the solution and rubric *before* they answer. Grade with `exercise_submit` and `links` — for every prerequisite, did their derivation actually use that link correctly? A result can't be `correct` while a link failed. A broken link is named in the next remediation, so be precise about which one broke. Give the derive check when the node has had time to settle (typically its second check, or a later review), not as the very first question after teaching.
 - **After a miss, characterise it before moving on** — a careless slip, a narrow gap, or a misconception? Misconceptions matter most: a confidently-held wrong model has to be dislodged, not topped up. Tag distractors with the `misconception` they represent, so a wrong pick is diagnostic and gets recorded.
 
 ### Writing quiz options — a construction procedure (every `quiz_ask`)

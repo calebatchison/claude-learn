@@ -1,6 +1,6 @@
 import { getNode } from "./graph.ts";
 import { inferAncestors, record, status } from "./mastery.ts";
-import type { AssessState, Check, Exercise, ExerciseMode, Graph, Purpose, Quiz, QuizOption, Result, Status } from "./types.ts";
+import type { AssessState, Check, Exercise, ExerciseMode, Graph, LinkResult, Purpose, Quiz, QuizOption, Result, Status } from "./types.ts";
 import { latexToUnicode } from "./plaintext.ts";
 import { iso, letter } from "./util.ts";
 
@@ -22,6 +22,7 @@ export function createQuiz(a: AssessState, g: Graph | undefined, input: QuizInpu
 	for (const i of input.correct) {
 		if (!Number.isInteger(i) || i < 0 || i >= input.options.length) throw new Error(`correct index ${i} is out of range (0-${input.options.length - 1})`);
 	}
+	if (input.check === "derive") throw new Error("a derive check is free response: use exercise_assign with check: \"derive\"");
 	if (input.node && g) getNode(g, input.node);
 	a.counter.quiz++;
 	const purpose = input.purpose ?? "check";
@@ -124,10 +125,33 @@ export interface ExerciseInput {
 	link?: string;
 	purpose?: Purpose;
 	check?: Check;
+	/** Derive only: the prereq ids the rubric covers — must be all of the node's prereqs. */
+	covers?: string[];
+}
+
+/** A derive exercise must rebuild the node from every one of its prereqs. */
+function validateDerive(g: Graph | undefined, input: ExerciseInput): string[] {
+	if (!input.node || !g) throw new Error("a derive exercise needs a node on the map");
+	const n = getNode(g, input.node);
+	if (!n.prereqs.length) throw new Error(`"${n.id}" has no prerequisites to derive it from — use a recall or worked check`);
+	if (input.mode === "external") throw new Error("a derive exercise is answered in chat or on paper");
+	if (!input.rubric?.trim()) throw new Error("a derive exercise needs a rubric naming how each prerequisite is used");
+	const covers = new Set(input.covers ?? []);
+	const missing = n.prereqs.filter((p) => !covers.has(p));
+	const extra = [...covers].filter((p) => !n.prereqs.includes(p));
+	if (missing.length || extra.length) {
+		throw new Error(
+			`a derive exercise must cover exactly the prerequisites of "${n.id}" (${n.prereqs.join(", ")})` +
+				(missing.length ? `; missing: ${missing.join(", ")}` : "") +
+				(extra.length ? `; not prerequisites: ${extra.join(", ")}` : ""),
+		);
+	}
+	return [...n.prereqs];
 }
 
 export function assignExercise(a: AssessState, g: Graph | undefined, input: ExerciseInput, now: Date): Exercise {
 	if (input.node && g) getNode(g, input.node);
+	const covers = input.check === "derive" ? validateDerive(g, input) : undefined;
 	a.counter.exercise++;
 	const ex: Exercise = {
 		id: `ex${a.counter.exercise}`,
@@ -139,6 +163,7 @@ export function assignExercise(a: AssessState, g: Graph | undefined, input: Exer
 		link: input.link,
 		purpose: input.purpose ?? "check",
 		check: input.check ?? "worked",
+		...(covers ? { covers } : {}),
 		assigned: iso(now),
 		status: "pending",
 	};
@@ -153,12 +178,25 @@ export interface ExerciseSubmit {
 	misconception?: string;
 	feedback: string;
 	submission?: string;
+	/** Derive only: whether each covered prerequisite link held. */
+	links?: LinkResult[];
+}
+
+function checkLinks(ex: Exercise, input: ExerciseSubmit): LinkResult[] {
+	const covers = ex.covers ?? [];
+	const byId = new Map((input.links ?? []).map((l) => [l.from, l.ok]));
+	const missing = covers.filter((p) => !byId.has(p));
+	if (missing.length) throw new Error(`grade every link of ${ex.id}: missing ${missing.join(", ")}`);
+	const links = covers.map((from) => ({ from, ok: byId.get(from)! }));
+	if (input.result === "correct" && links.some((l) => !l.ok)) throw new Error("a derive result can't be correct while a link failed — grade it partial or wrong");
+	return links;
 }
 
 export function submitExercise(a: AssessState, g: Graph | undefined, input: ExerciseSubmit, now: Date): { exercise: Exercise; status?: Status } {
 	const ex = a.exercises[input.id];
 	if (!ex) throw new Error(`unknown exercise "${input.id}"`);
 	if (ex.status === "submitted") throw new Error(`${ex.id} was already graded (${ex.result}) — assign a new exercise for another attempt`);
+	const links = ex.check === "derive" ? checkLinks(ex, input) : undefined;
 	ex.status = "submitted";
 	ex.submitted = iso(now);
 	ex.result = input.result;
@@ -170,7 +208,17 @@ export function submitExercise(a: AssessState, g: Graph | undefined, input: Exer
 		const n = getNode(g, ex.node);
 		record(
 			n,
-			{ at: iso(now), via: "exercise", purpose: ex.purpose, check: ex.check, result: input.result, hints: input.hints ?? 0, misconception: input.misconception, ref: ex.id },
+			{
+				at: iso(now),
+				via: "exercise",
+				purpose: ex.purpose,
+				check: ex.check,
+				result: input.result,
+				hints: input.hints ?? 0,
+				misconception: input.misconception,
+				...(links ? { links } : {}),
+				ref: ex.id,
+			},
 			now,
 		);
 		st = status(n);

@@ -71,7 +71,7 @@ Every quiz and exercise result is recorded as evidence on a map node. Status is 
 | shaky | Last check missed |
 | misconception | Last check revealed a named wrong model, which has to be dislodged |
 | passing | Last check right, but not yet re-verified |
-| solid | Clean passes on **two different kinds** of check (recall, transfer, worked problem) **and** a pass on a **later day** |
+| solid | Clean passes on **two different kinds** of check (recall, transfer, worked problem, derive) **and** a pass on a **later day**, **and**, for a node built on other ideas, a **derive** pass that rebuilt it from all of its prerequisites |
 
 Re-checks use spaced repetition: the interval grows when you pass a due review and resets on a miss. `next` always orders the work the same way:
 1. fix what's broken
@@ -83,6 +83,7 @@ An active goal restricts new material to the goal's prerequisite path.
 ### Quizzes and exercises
 
 - **Multiple choice** (`quiz_ask`): the server grades it, not Claude, so a wrong answer can't be rounded up to "basically right". Each distractor can be tagged with the misconception it represents, so a wrong pick is diagnostic.
+- **Derive checks** (`exercise_assign` with `check: "derive"`): "starting from A and B, show why C must hold." The exercise must cover every prerequisite, and grading records which links held, so a miss points at the exact connection that broke. Whether a node needs one is decided when the map is built (see [the design note](docs/design/mastery-v2.md)).
 - **Free response and paper work** (`exercise_assign`): Claude stores a worked solution and rubric. You answer in chat, upload a photo of handwritten work (Claude grades the steps), or bring back a LeetCode solution, in this session or a later one.
 
 Quizzes are asked through Claude Code's built-in question picker, with math converted to Unicode for the terminal ($|0\rangle$ → |0⟩). The session note keeps the real LaTeX. Choose *Other → "I don't know"* instead of guessing: it's recorded as an honest miss. To use the MCP form dialog instead, set `LEARN_QUIZ_UI=picker`. It answers in one step, but it truncates long questions.

@@ -12,7 +12,7 @@
 
 Work through `next`, one item at a time. Call `next` again after each item — results change what's due.
 
-**`remediate`** — a node that's shaky or holds a misconception. Don't just repeat the old explanation. Find the specific wrong model (the recorded misconception, or probe for it), show why it fails — ideally let them find the counterexample — then rebuild the node from its prerequisites and check again with a *different* question than the one they missed.
+**`remediate`** — a node that's shaky or holds a misconception. If the reason names a broken link from a derive check ("couldn't get from A to C"), the node itself may be fine — re-teach how C follows from A, and check A directly first if the miss looks like A is the weak part. Otherwise, don't just repeat the old explanation. Find the specific wrong model (the recorded misconception, or probe for it), show why it fails — ideally let them find the counterexample — then rebuild the node from its prerequisites and check again with a *different* question than the one they missed.
 
 **`review`** — spaced re-verification. Ask **one** question, cold, no re-teaching first. Choose the check kind the reason asks for ("needs a transfer check") — a different kind from earlier passes is what turns *passing* into *solid*. For an *assumed* node, a quick direct check is enough. If they miss, it becomes remediation — do that before new material.
 

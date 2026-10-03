@@ -21,6 +21,7 @@ The map is a DAG of **nodes** (one teachable idea each) grouped into **units** (
 - **Edges** point from prerequisite to dependent. Only add an edge if the dependent genuinely can't be understood without the prereq — over-connecting blocks progress for no reason.
 - **Roots** are unconditional truths or real definitions (`foundational: true`). **Stress-test every root**: is it genuinely something this learner can accept at face value, or a disguised theorem that derives from something simpler? If it derives, push it down and extend the map. A wrong root corrupts everything hung off it.
 - **Practice nodes** (`kind: practice`) are problems that exercise concepts — e.g. one per LeetCode problem, with the URL in `links` and the pattern concepts as prereqs. They're mastered by solving, not by multiple choice.
+- **Derive requirement:** by default, a concept node with prerequisites that isn't foundational needs a **derive** pass (rebuild it from all its prereqs) before it can be solid; foundational and practice nodes don't. Override per node where the default is wrong — e.g. a node that's pure notation or a convention (`requires_derive: false`), or a foundational-looking node that really should be derived (`true`) — always with a `derive_reason`. Decide this now, at map time, not while grading.
 - **Cite sources**: `sources: [{file, page}]` on nodes drawn from course material.
 - **Ids** are permanent kebab-case (`eigen-decomposition`); titles are short.
 
@@ -32,6 +33,7 @@ Show the learner, in chat:
 
 1. **The approach, in prose** — what the course covers, in what order, and why this way given their goal.
 2. **The map** — paste the single diagram `graph_apply`'s dry-run `preview` returns (the unit overview, or the whole map if it's small). Don't hand-draw the full graph — `map.md` has the per-unit detail.
+3. **The derive rule** — one line on which nodes will need a derive pass (the dry-run's `derive` field), and list any overrides with their reasons.
 
 Then **stop and wait for their go-ahead.** A wrong root or scope is cheap to fix now and expensive mid-course. Apply any changes they ask for.
 

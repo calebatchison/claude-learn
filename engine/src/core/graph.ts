@@ -159,6 +159,9 @@ export interface NodeUpsert {
 	foundational?: boolean;
 	sources?: SourceRef[];
 	links?: string[];
+	/** Override whether this node needs a derive pass for mastery. Needs `derive_reason`. */
+	requires_derive?: boolean;
+	derive_reason?: string;
 }
 
 export interface Edge {
@@ -186,6 +189,21 @@ export interface ChangeSummary {
 	edgesRemoved: number;
 	unitsAdded: string[];
 	sourcesUpdated: string[];
+}
+
+/** Record a derive-requirement override. Every change needs a stated reason and is kept. */
+function setDeriveRule(n: GraphNode, up: NodeUpsert, now: Date, errors: string[]): void {
+	if (up.requires_derive === undefined) {
+		if (up.derive_reason !== undefined) errors.push(`node "${up.id}": derive_reason given without requires_derive`);
+		return;
+	}
+	if (!up.derive_reason?.trim()) {
+		errors.push(`node "${up.id}": changing requires_derive needs a derive_reason`);
+		return;
+	}
+	const last = n.deriveRules?.at(-1);
+	if (last && last.required === up.requires_derive && last.reason === up.derive_reason) return;
+	n.deriveRules = [...(n.deriveRules ?? []), { required: up.requires_derive, reason: up.derive_reason, at: iso(now) }];
 }
 
 /**
@@ -242,6 +260,7 @@ export function applyChanges(g: Graph, cs: ChangeSet, now: Date): { graph: Graph
 			if (up.foundational) n.foundational = true;
 			if (up.sources?.length) n.sources = up.sources;
 			if (up.links?.length) n.links = up.links;
+			setDeriveRule(n, up, now, errors);
 			next.nodes[up.id] = n;
 			summary.added.push(up.id);
 		} else {
@@ -257,6 +276,7 @@ export function applyChanges(g: Graph, cs: ChangeSet, now: Date): { graph: Graph
 			}
 			if (up.sources !== undefined) existing.sources = up.sources;
 			if (up.links !== undefined) existing.links = up.links;
+			setDeriveRule(existing, up, now, errors);
 			summary.updated.push(up.id);
 		}
 	}

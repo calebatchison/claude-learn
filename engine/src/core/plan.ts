@@ -75,14 +75,16 @@ export function next(g: Graph, now: Date, opts: PlanOptions = {}): Recommendatio
 	const broken = ids.filter((id) => needsRemediation(st.get(id)!) && ready(id)).sort(byPriority);
 	for (const id of broken) {
 		const s = st.get(id)!;
+		const last = [...getNode(g, id).evidence].reverse().find((e) => e.via !== "inferred");
 		const misc = [...getNode(g, id).evidence].reverse().find((e) => e.misconception)?.misconception;
-		out.push({
-			action: "remediate",
-			node: id,
-			title: title(id),
-			status: s,
-			reason: (s === "misconception" ? `misconception to dislodge: "${misc}"` : "last check missed") + goalNote(id),
-		});
+		const broken = last?.check === "derive" ? (last.links ?? []).filter((l) => !l.ok).map((l) => title(l.from)) : [];
+		const why =
+			s === "misconception"
+				? `misconception to dislodge: "${misc}"`
+				: broken.length
+					? `derive missed: couldn't get from ${broken.join(" and ")} to ${title(id)} — re-teach that link`
+					: "last check missed";
+		out.push({ action: "remediate", node: id, title: title(id), status: s, reason: why + goalNote(id) });
 	}
 
 	// 2. Due reviews (capped so review never eats the session).

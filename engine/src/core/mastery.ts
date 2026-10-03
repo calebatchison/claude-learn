@@ -6,9 +6,11 @@ import { addDays, DAY_MS, iso } from "./util.ts";
  * The mastery bar. A node is solid only when, since its last failure, the
  * learner has:
  *   - passed at least MIN_CHECK_KINDS different kinds of check (recall,
- *     transfer, worked problem), with at most one hint each, AND
+ *     transfer, worked problem, derive), with at most one hint each, AND
  *   - passed again at least DELAYED_RECHECK_MS after the first of those passes
- *     (it survived a delayed re-check, so it isn't just short-term memory).
+ *     (it survived a delayed re-check, so it isn't just short-term memory), AND
+ *   - if the node requires it, passed a derive check that rebuilt it from all
+ *     of its current prerequisites.
  */
 export const MIN_CHECK_KINDS = 2;
 export const DELAYED_RECHECK_MS = 20 * 3600_000;
@@ -34,20 +36,49 @@ export function status(n: GraphNode): Status {
 		if (onlyProbes && !n.taught?.length) return "unseen";
 		return "shaky";
 	}
-	return meetsMasteryBar(real) ? "solid" : "passing";
+	return meetsMasteryBar(n, real) ? "solid" : "passing";
 }
 
-function meetsMasteryBar(real: Evidence[]): boolean {
+/** Default: concept nodes built on something need a derive pass. */
+export function defaultRequiresDerive(n: GraphNode): boolean {
+	return n.kind === "concept" && !n.foundational && n.prereqs.length > 0;
+}
+
+/** Whether a derive pass is required, after any map-time override. */
+export function requiresDerive(n: GraphNode): boolean {
+	const rule = n.deriveRules?.at(-1);
+	if (rule) return rule.required && n.prereqs.length > 0;
+	return defaultRequiresDerive(n);
+}
+
+/** A derive pass whose links cover every current prereq. */
+function coversPrereqs(n: GraphNode, e: Evidence): boolean {
+	const ok = new Set((e.links ?? []).filter((l) => l.ok).map((l) => l.from));
+	return n.prereqs.every((p) => ok.has(p));
+}
+
+/** Clean passes since the last miss. */
+function cleanRun(real: Evidence[]): Evidence[] {
 	let lastFail = -1;
 	real.forEach((e, i) => {
 		if (e.result !== "correct") lastFail = i;
 	});
-	const run = real.slice(lastFail + 1).filter(isCleanPass);
-	if (run.length < 2) return false;
+	return real.slice(lastFail + 1).filter(isCleanPass);
+}
+
+function missingForMastery(n: GraphNode, real: Evidence[]): { kinds?: Check[]; delayed?: true; derive?: true } {
+	const run = cleanRun(real);
+	const out: { kinds?: Check[]; delayed?: true; derive?: true } = {};
 	const kinds = new Set<Check>(run.map((e) => e.check));
-	if (kinds.size < MIN_CHECK_KINDS) return false;
-	const first = Date.parse(run[0]!.at);
-	return run.some((e) => Date.parse(e.at) - first >= DELAYED_RECHECK_MS);
+	if (kinds.size < MIN_CHECK_KINDS) out.kinds = (["recall", "transfer", "worked", "derive"] as Check[]).filter((k) => !kinds.has(k));
+	const first = run[0] ? Date.parse(run[0].at) : Number.POSITIVE_INFINITY;
+	if (!run.some((e) => Date.parse(e.at) - first >= DELAYED_RECHECK_MS)) out.delayed = true;
+	if (requiresDerive(n) && !run.some((e) => e.check === "derive" && coversPrereqs(n, e))) out.derive = true;
+	return out;
+}
+
+function meetsMasteryBar(n: GraphNode, real: Evidence[]): boolean {
+	return Object.keys(missingForMastery(n, real)).length === 0;
 }
 
 /** Counts as known for unlocking dependents. */
@@ -64,24 +95,17 @@ export function statuses(g: Graph): Map<string, Status> {
 }
 
 /** What the learner still needs for this node to count as solid. */
-export function masteryGap(n: GraphNode, now: Date): string | undefined {
+export function masteryGap(n: GraphNode, _now?: Date): string | undefined {
 	const s = status(n);
 	if (s === "solid") return undefined;
 	if (s !== "passing") return undefined;
-	const real = n.evidence.filter(isReal);
-	let lastFail = -1;
-	real.forEach((e, i) => {
-		if (e.result !== "correct") lastFail = i;
-	});
-	const run = real.slice(lastFail + 1).filter(isCleanPass);
-	const kinds = new Set(run.map((e) => e.check));
+	const m = missingForMastery(n, n.evidence.filter(isReal));
 	const needs: string[] = [];
-	if (kinds.size < MIN_CHECK_KINDS) {
-		const missing = (["recall", "transfer", "worked"] as Check[]).filter((k) => !kinds.has(k));
-		needs.push(`a ${missing.join(" or ")} check`);
-	}
-	const first = run[0] ? Date.parse(run[0].at) : now.getTime();
-	if (!run.some((e) => Date.parse(e.at) - first >= DELAYED_RECHECK_MS)) needs.push("a re-check on a later day");
+	if (m.derive) needs.push(`a derive check rebuilding it from ${n.prereqs.join(", ")}`);
+	// A derive pass is also a new kind of check, so it may close both gaps.
+	const have = 4 - (m.kinds?.length ?? 0);
+	if (m.kinds && !(m.derive && have + 1 >= MIN_CHECK_KINDS)) needs.push(`a ${m.kinds.join(" or ")} check`);
+	if (m.delayed) needs.push("a re-check on a later day");
 	return needs.length ? `needs ${needs.join(" and ")}` : undefined;
 }
 

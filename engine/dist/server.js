@@ -36676,6 +36676,19 @@ function validate2(g) {
   if (cycle) errors.push(`prerequisite cycle: ${cycle.join(" -> ")}`);
   return errors;
 }
+function setDeriveRule(n, up, now, errors) {
+  if (up.requires_derive === void 0) {
+    if (up.derive_reason !== void 0) errors.push(`node "${up.id}": derive_reason given without requires_derive`);
+    return;
+  }
+  if (!up.derive_reason?.trim()) {
+    errors.push(`node "${up.id}": changing requires_derive needs a derive_reason`);
+    return;
+  }
+  const last = n.deriveRules?.at(-1);
+  if (last && last.required === up.requires_derive && last.reason === up.derive_reason) return;
+  n.deriveRules = [...n.deriveRules ?? [], { required: up.requires_derive, reason: up.derive_reason, at: iso(now) }];
+}
 function applyChanges(g, cs, now) {
   const next2 = structuredClone(g);
   const summary2 = {
@@ -36723,6 +36736,7 @@ function applyChanges(g, cs, now) {
       if (up.foundational) n.foundational = true;
       if (up.sources?.length) n.sources = up.sources;
       if (up.links?.length) n.links = up.links;
+      setDeriveRule(n, up, now, errors);
       next2.nodes[up.id] = n;
       summary2.added.push(up.id);
     } else {
@@ -36738,6 +36752,7 @@ function applyChanges(g, cs, now) {
       }
       if (up.sources !== void 0) existing.sources = up.sources;
       if (up.links !== void 0) existing.links = up.links;
+      setDeriveRule(existing, up, now, errors);
       summary2.updated.push(up.id);
     }
   }
@@ -36810,19 +36825,39 @@ function status(n) {
     if (onlyProbes && !n.taught?.length) return "unseen";
     return "shaky";
   }
-  return meetsMasteryBar(real) ? "solid" : "passing";
+  return meetsMasteryBar(n, real) ? "solid" : "passing";
 }
-function meetsMasteryBar(real) {
+function defaultRequiresDerive(n) {
+  return n.kind === "concept" && !n.foundational && n.prereqs.length > 0;
+}
+function requiresDerive(n) {
+  const rule = n.deriveRules?.at(-1);
+  if (rule) return rule.required && n.prereqs.length > 0;
+  return defaultRequiresDerive(n);
+}
+function coversPrereqs(n, e) {
+  const ok = new Set((e.links ?? []).filter((l) => l.ok).map((l) => l.from));
+  return n.prereqs.every((p) => ok.has(p));
+}
+function cleanRun(real) {
   let lastFail = -1;
   real.forEach((e, i) => {
     if (e.result !== "correct") lastFail = i;
   });
-  const run2 = real.slice(lastFail + 1).filter(isCleanPass);
-  if (run2.length < 2) return false;
+  return real.slice(lastFail + 1).filter(isCleanPass);
+}
+function missingForMastery(n, real) {
+  const run2 = cleanRun(real);
+  const out = {};
   const kinds = new Set(run2.map((e) => e.check));
-  if (kinds.size < MIN_CHECK_KINDS) return false;
-  const first = Date.parse(run2[0].at);
-  return run2.some((e) => Date.parse(e.at) - first >= DELAYED_RECHECK_MS);
+  if (kinds.size < MIN_CHECK_KINDS) out.kinds = ["recall", "transfer", "worked", "derive"].filter((k) => !kinds.has(k));
+  const first = run2[0] ? Date.parse(run2[0].at) : Number.POSITIVE_INFINITY;
+  if (!run2.some((e) => Date.parse(e.at) - first >= DELAYED_RECHECK_MS)) out.delayed = true;
+  if (requiresDerive(n) && !run2.some((e) => e.check === "derive" && coversPrereqs(n, e))) out.derive = true;
+  return out;
+}
+function meetsMasteryBar(n, real) {
+  return Object.keys(missingForMastery(n, real)).length === 0;
 }
 function isSatisfied(s) {
   return s === "passing" || s === "solid" || s === "assumed";
@@ -36833,24 +36868,16 @@ function needsRemediation(s) {
 function statuses(g) {
   return new Map(Object.values(g.nodes).map((n) => [n.id, status(n)]));
 }
-function masteryGap(n, now) {
+function masteryGap(n, _now) {
   const s = status(n);
   if (s === "solid") return void 0;
   if (s !== "passing") return void 0;
-  const real = n.evidence.filter(isReal);
-  let lastFail = -1;
-  real.forEach((e, i) => {
-    if (e.result !== "correct") lastFail = i;
-  });
-  const run2 = real.slice(lastFail + 1).filter(isCleanPass);
-  const kinds = new Set(run2.map((e) => e.check));
+  const m = missingForMastery(n, n.evidence.filter(isReal));
   const needs = [];
-  if (kinds.size < MIN_CHECK_KINDS) {
-    const missing = ["recall", "transfer", "worked"].filter((k) => !kinds.has(k));
-    needs.push(`a ${missing.join(" or ")} check`);
-  }
-  const first = run2[0] ? Date.parse(run2[0].at) : now.getTime();
-  if (!run2.some((e) => Date.parse(e.at) - first >= DELAYED_RECHECK_MS)) needs.push("a re-check on a later day");
+  if (m.derive) needs.push(`a derive check rebuilding it from ${n.prereqs.join(", ")}`);
+  const have = 4 - (m.kinds?.length ?? 0);
+  if (m.kinds && !(m.derive && have + 1 >= MIN_CHECK_KINDS)) needs.push(`a ${m.kinds.join(" or ")} check`);
+  if (m.delayed) needs.push("a re-check on a later day");
   return needs.length ? `needs ${needs.join(" and ")}` : void 0;
 }
 function record2(n, ev, now) {
@@ -37143,6 +37170,7 @@ function createQuiz(a, g, input2, now) {
   for (const i of input2.correct) {
     if (!Number.isInteger(i) || i < 0 || i >= input2.options.length) throw new Error(`correct index ${i} is out of range (0-${input2.options.length - 1})`);
   }
+  if (input2.check === "derive") throw new Error('a derive check is free response: use exercise_assign with check: "derive"');
   if (input2.node && g) getNode(g, input2.node);
   a.counter.quiz++;
   const purpose = input2.purpose ?? "check";
@@ -37217,8 +37245,25 @@ function gradeQuiz(a, g, quizId, chosen, now) {
   delete a.quizzes[quizId];
   return grade;
 }
+function validateDerive(g, input2) {
+  if (!input2.node || !g) throw new Error("a derive exercise needs a node on the map");
+  const n = getNode(g, input2.node);
+  if (!n.prereqs.length) throw new Error(`"${n.id}" has no prerequisites to derive it from \u2014 use a recall or worked check`);
+  if (input2.mode === "external") throw new Error("a derive exercise is answered in chat or on paper");
+  if (!input2.rubric?.trim()) throw new Error("a derive exercise needs a rubric naming how each prerequisite is used");
+  const covers = new Set(input2.covers ?? []);
+  const missing = n.prereqs.filter((p) => !covers.has(p));
+  const extra = [...covers].filter((p) => !n.prereqs.includes(p));
+  if (missing.length || extra.length) {
+    throw new Error(
+      `a derive exercise must cover exactly the prerequisites of "${n.id}" (${n.prereqs.join(", ")})` + (missing.length ? `; missing: ${missing.join(", ")}` : "") + (extra.length ? `; not prerequisites: ${extra.join(", ")}` : "")
+    );
+  }
+  return [...n.prereqs];
+}
 function assignExercise(a, g, input2, now) {
   if (input2.node && g) getNode(g, input2.node);
+  const covers = input2.check === "derive" ? validateDerive(g, input2) : void 0;
   a.counter.exercise++;
   const ex = {
     id: `ex${a.counter.exercise}`,
@@ -37230,16 +37275,27 @@ function assignExercise(a, g, input2, now) {
     link: input2.link,
     purpose: input2.purpose ?? "check",
     check: input2.check ?? "worked",
+    ...covers ? { covers } : {},
     assigned: iso(now),
     status: "pending"
   };
   a.exercises[ex.id] = ex;
   return ex;
 }
+function checkLinks(ex, input2) {
+  const covers = ex.covers ?? [];
+  const byId = new Map((input2.links ?? []).map((l) => [l.from, l.ok]));
+  const missing = covers.filter((p) => !byId.has(p));
+  if (missing.length) throw new Error(`grade every link of ${ex.id}: missing ${missing.join(", ")}`);
+  const links = covers.map((from) => ({ from, ok: byId.get(from) }));
+  if (input2.result === "correct" && links.some((l) => !l.ok)) throw new Error("a derive result can't be correct while a link failed \u2014 grade it partial or wrong");
+  return links;
+}
 function submitExercise(a, g, input2, now) {
   const ex = a.exercises[input2.id];
   if (!ex) throw new Error(`unknown exercise "${input2.id}"`);
   if (ex.status === "submitted") throw new Error(`${ex.id} was already graded (${ex.result}) \u2014 assign a new exercise for another attempt`);
+  const links = ex.check === "derive" ? checkLinks(ex, input2) : void 0;
   ex.status = "submitted";
   ex.submitted = iso(now);
   ex.result = input2.result;
@@ -37251,7 +37307,17 @@ function submitExercise(a, g, input2, now) {
     const n = getNode(g, ex.node);
     record2(
       n,
-      { at: iso(now), via: "exercise", purpose: ex.purpose, check: ex.check, result: input2.result, hints: input2.hints ?? 0, misconception: input2.misconception, ref: ex.id },
+      {
+        at: iso(now),
+        via: "exercise",
+        purpose: ex.purpose,
+        check: ex.check,
+        result: input2.result,
+        hints: input2.hints ?? 0,
+        misconception: input2.misconception,
+        ...links ? { links } : {},
+        ref: ex.id
+      },
       now
     );
     st = status(n);
@@ -37310,14 +37376,11 @@ function next(g, now, opts = {}) {
   const broken = ids.filter((id) => needsRemediation(st.get(id)) && ready(id)).sort(byPriority);
   for (const id of broken) {
     const s = st.get(id);
+    const last = [...getNode(g, id).evidence].reverse().find((e) => e.via !== "inferred");
     const misc = [...getNode(g, id).evidence].reverse().find((e) => e.misconception)?.misconception;
-    out.push({
-      action: "remediate",
-      node: id,
-      title: title(id),
-      status: s,
-      reason: (s === "misconception" ? `misconception to dislodge: "${misc}"` : "last check missed") + goalNote(id)
-    });
+    const broken2 = last?.check === "derive" ? (last.links ?? []).filter((l) => !l.ok).map((l) => title(l.from)) : [];
+    const why = s === "misconception" ? `misconception to dislodge: "${misc}"` : broken2.length ? `derive missed: couldn't get from ${broken2.join(" and ")} to ${title(id)} \u2014 re-teach that link` : "last check missed";
+    out.push({ action: "remediate", node: id, title: title(id), status: s, reason: why + goalNote(id) });
   }
   const due = ids.filter((id) => isSatisfied(st.get(id)) && isDue(getNode(g, id), now)).sort((a, b) => {
     const ga = goalRank.has(a) ? 0 : 1;
@@ -37961,7 +38024,10 @@ var optionSchema = external_exports.object({
   description: external_exports.string().optional().describe("Rarely needed. Must not give the answer away."),
   misconception: external_exports.string().optional().describe("For a distractor: the misconception someone picking it holds. Recorded on the node if picked.")
 });
-var checkSchema = external_exports.enum(["recall", "transfer", "worked"]).describe("recall = state/recognise it; transfer = apply it in an unfamiliar setting; worked = carry out a multi-step problem");
+var quizCheckSchema = external_exports.enum(["recall", "transfer", "worked"]).describe("recall = state/recognise it; transfer = apply it in an unfamiliar setting; worked = carry out a multi-step problem");
+var checkSchema = external_exports.enum(["recall", "transfer", "worked", "derive"]).describe(
+  "recall = state it in their own words; transfer = apply it in an unfamiliar setting; worked = carry out a multi-step problem; derive = rebuild the node from ALL its prerequisites (needs covers + rubric)"
+);
 var purposeSchema = external_exports.enum(["probe", "check", "review"]).describe("probe = placement/mapping; check = after teaching; review = spaced re-verification");
 server.registerTool(
   "learn_status",
@@ -38122,7 +38188,11 @@ var nodeUpsert = external_exports.object({
   prereqs: external_exports.array(external_exports.string()).optional().describe("REPLACES the prereq list. Use add_edges to add one."),
   foundational: external_exports.boolean().optional().describe("An unconditional truth the teaching is founded on."),
   sources: external_exports.array(external_exports.object({ file: external_exports.string(), page: external_exports.string().optional(), note: external_exports.string().optional() })).optional(),
-  links: external_exports.array(external_exports.string()).optional()
+  links: external_exports.array(external_exports.string()).optional(),
+  requires_derive: external_exports.boolean().optional().describe(
+    "Override whether mastering this node needs a derive pass. Default: required for concept nodes with prereqs that aren't foundational; not for foundational or practice nodes. Needs derive_reason; every override is logged."
+  ),
+  derive_reason: external_exports.string().optional().describe("Why this node departs from the default derive rule (required with requires_derive).")
 });
 var edge = external_exports.object({ from: external_exports.string().describe("prereq"), to: external_exports.string().describe("dependent") });
 server.registerTool(
@@ -38151,7 +38221,18 @@ server.registerTool(
     if (dry_run) {
       const map2 = renderMap(graph, now);
       const section = /## (?:Units|Map)\n[\s\S]*?(```mermaid[\s\S]*?```)/.exec(map2)?.[1];
-      return json2({ dry_run: true, would: s, preview: section ?? "(empty map)", note: "Show the learner this one diagram; the full detail lives in map.md." });
+      const nodes = Object.values(graph.nodes);
+      const derive = {
+        required: nodes.filter(requiresDerive).map((n) => n.id),
+        overrides: nodes.filter((n) => n.deriveRules?.length).map((n) => ({ id: n.id, required: n.deriveRules.at(-1).required, reason: n.deriveRules.at(-1).reason }))
+      };
+      return json2({
+        dry_run: true,
+        would: s,
+        preview: section ?? "(empty map)",
+        derive,
+        note: "Show the learner this one diagram, and which nodes need a derive pass (and any overrides with their reasons); the full detail lives in map.md."
+      });
     }
     saveGraph(c, graph, now);
     return json2({ applied: s, phase: graph.phase, nodes: Object.keys(graph.nodes).length });
@@ -38249,7 +38330,7 @@ server.registerTool(
       context: external_exports.string().optional().describe("Optional setup shown above the options."),
       node: external_exports.string().optional().describe("Node this tests. Omit only for questions not tied to the map."),
       purpose: purposeSchema.optional(),
-      check: checkSchema.optional(),
+      check: quizCheckSchema.optional(),
       infer: external_exports.boolean().optional().describe("On a correct probe, credit unchecked ancestors as assumed (default true for probes).")
     }
   },
@@ -38325,7 +38406,8 @@ server.registerTool(
       link: external_exports.string().optional(),
       node: external_exports.string().optional(),
       purpose: purposeSchema.optional(),
-      check: checkSchema.optional().describe("default worked")
+      check: checkSchema.optional().describe("default worked"),
+      covers: external_exports.array(external_exports.string()).optional().describe("derive only: the node's prerequisite ids \u2014 must be all of them. The rubric says how each one is used.")
     }
   },
   tool((input2) => {
@@ -38366,7 +38448,8 @@ server.registerTool(
       hints: external_exports.number().int().min(0).max(5).optional().describe("Hints you gave: 0 cold, 1 a nudge, 2+ substantial help."),
       misconception: external_exports.string().optional().describe("Name the wrong model if the work revealed one."),
       feedback: external_exports.string().describe("What was right, where it went wrong (which step), what to fix. Shown in the log."),
-      submission: external_exports.string().optional().describe("Path of the submitted file, if any.")
+      submission: external_exports.string().optional().describe("Path of the submitted file, if any."),
+      links: external_exports.array(external_exports.object({ from: external_exports.string(), ok: external_exports.boolean() })).optional().describe("derive only: for every covered prerequisite, whether the learner's derivation used that link correctly.")
     }
   },
   tool((input2) => {
