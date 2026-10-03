@@ -157,10 +157,11 @@ var MIN_CHECK_KINDS = 2;
 var DELAYED_RECHECK_MS = 20 * 36e5;
 var isTentative = (e) => e.result === "correct" && e.confidence === "unsure";
 var isReal = (e) => e.via !== "inferred" && !isTentative(e);
+var realFor = (depth) => depth === "breadth" ? (e) => e.via !== "inferred" : isReal;
 var isCleanPass = (e) => e.result === "correct" && (e.hints ?? 0) <= 1;
 var isGenerative = (e) => e.via === "exercise";
 function status(n, depth = "deep") {
-  const real = n.evidence.filter(isReal);
+  const real = n.evidence.filter(realFor(depth));
   if (real.length === 0) {
     if (n.evidence.some((e) => e.via === "inferred" && e.result === "correct")) return "assumed";
     return n.taught?.length ? "taught" : "unseen";
@@ -242,14 +243,19 @@ function atRisk(g, st = statuses(g)) {
 function activeGoals(g) {
   return g.goals.filter((x) => !x.cleared).sort((a, b) => (a.by ?? "9999").localeCompare(b.by ?? "9999") || a.created.localeCompare(b.created));
 }
+function isDone(g, id, st = statuses(g), depths2 = nodeDepths(g)) {
+  const s = st.get(id);
+  return s === "solid" || s === "assumed" && depths2.get(id)?.depth === "breadth";
+}
 function goalClosure(g, goal, st = statuses(g)) {
+  const depths2 = nodeDepths(g);
   const want = /* @__PURE__ */ new Set();
   for (const t of goal.targets) {
     if (!g.nodes[t]) continue;
     want.add(t);
     for (const a of ancestors(g, t)) want.add(a);
   }
-  return topoOrder(g).filter((id) => want.has(id) && st.get(id) !== "solid");
+  return topoOrder(g).filter((id) => want.has(id) && !isDone(g, id, st, depths2));
 }
 function next(g, now, opts = {}) {
   const reviewCap = opts.reviewCap ?? 4;
@@ -324,7 +330,7 @@ function next(g, now, opts = {}) {
     out.push({ action: "teach", node: id, title: n.title, status: s, reason: base + goalNote(id) });
   }
   if (out.length === 0) {
-    const unsolid = ids.filter((id) => st.get(id) !== "solid").length;
+    const unsolid = ids.filter((id) => !isDone(g, id, st, depths2)).length;
     out.push({
       action: "done",
       reason: unsolid ? `nothing due \u2014 ${unsolid} node(s) are passing and will come back for re-checks on schedule` : "every node is solid or covered \u2014 add sources or extend the map"

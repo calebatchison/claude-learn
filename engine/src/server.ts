@@ -446,7 +446,14 @@ function finishGrade(grade: QuizGrade) {
 		status: "graded",
 		grade,
 		...(grade.result === "wrong" ? { teacher_note: "Probe the miss before moving on: slip, narrow gap, or misconception?" } : {}),
-		...(grade.tentative ? { teacher_note: "Right but unsure: don't treat it as known. It comes back for review sooner; consider a quick follow-up from a different angle." } : {}),
+		...(grade.tentative
+			? {
+					teacher_note:
+						grade.status === "solid"
+							? "Right but unsure on a breadth node: it counts as covered, with one follow-up check in a few days to rule out luck. Move on."
+							: "Right but unsure: don't treat it as known. It comes back for review sooner; consider a quick follow-up from a different angle.",
+				}
+			: {}),
 	};
 }
 
@@ -531,7 +538,7 @@ server.registerTool(
 	"quiz_answer",
 	{
 		description:
-			"Grade a pending quiz with the learner's selection (labels or letters exactly as they picked them). Empty selected = they don't know (graded as a miss, which is honest and useful). For probes and reviews, pass their confidence: right + unsure is tentative (no mastery credit, review comes sooner); wrong + sure is recorded as a misconception.",
+			"Grade a pending quiz with the learner's selection (labels or letters exactly as they picked them). Empty selected = they don't know (graded as a miss, which is honest and useful). For probes and reviews, pass their confidence: right + unsure is tentative on deep nodes (no mastery credit, review comes sooner) and a flagged pass on breadth nodes (covered, one follow-up check); wrong + sure is recorded as a misconception.",
 		inputSchema: {
 			quiz: z.string(),
 			selected: z.array(z.string()),

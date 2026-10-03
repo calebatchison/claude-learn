@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { applyChanges, nodeDepths } from "../src/core/graph.ts";
-import { FOLLOWUP_DAYS, record, status, statuses } from "../src/core/mastery.ts";
-import { next } from "../src/core/plan.ts";
+import { createQuiz, gradeQuiz } from "../src/core/assess.ts";
+import { creditPrereqs, FOLLOWUP_DAYS, record, status, statuses } from "../src/core/mastery.ts";
+import { goalClosure, next } from "../src/core/plan.ts";
 import { listNodes, renderMap } from "../src/core/render.ts";
 import type { Evidence, Graph } from "../src/core/types.ts";
 import { hours, sampleGraph, T0 } from "./helpers.ts";
@@ -88,5 +89,39 @@ describe("breadth bar", () => {
 		assert.equal(next(g, T0).find((r) => r.action === "teach")!.node, "span");
 		assert.match(renderMap(g, T0), /☑️ Vectors/);
 		assert.match(listNodes(g), /vectors \| Vectors \| covered \| breadth/);
+	});
+});
+
+describe("breadth grace", () => {
+	it("right but unsure counts as covered, with one follow-up check", () => {
+		const n = sampleGraph().nodes.vectors!;
+		record(n, pass(T0, { purpose: "review", confidence: "unsure" }), T0, "breadth");
+		assert.equal(status(n, "breadth"), "solid");
+		assert.equal(status(n, "deep"), "unseen", "deep treats the same answer as tentative");
+		assert.equal(n.review!.interval, FOLLOWUP_DAYS);
+		record(n, pass(hours(T0, 80), { purpose: "review", confidence: "sure" }), hours(T0, 80), "breadth");
+		assert.equal(n.review, undefined, "a sure pass on the follow-up ends reviews");
+	});
+
+	it("a sure correct probe credits breadth ancestors as done, with nothing to verify", () => {
+		const g = styled("breadth");
+		g.phase = "placement";
+		const a = { counter: { quiz: 0, exercise: 0 }, quizzes: {}, exercises: {} };
+		const q = createQuiz(a, g, { node: "basis", question: "?", options: [{ label: "y" }, { label: "n" }], correct: [0], purpose: "probe" }, T0);
+		const grade = gradeQuiz(a, g, q.id, [0], T0, "sure");
+		assert.deepEqual(grade.inferred!.sort(), ["span", "vectors"]);
+		assert.equal(g.nodes.span!.review, undefined);
+		g.goals.push({ id: "g", targets: ["basis"], created: T0.toISOString() });
+		assert.deepEqual(goalClosure(g, g.goals[0]!), [], "assumed breadth nodes count as done");
+	});
+
+	it("a cold pass doesn't push back a breadth prereq's follow-up", () => {
+		const g = styled("breadth");
+		record(g.nodes.vectors!, { ...pass(T0), result: "wrong" }, T0, "breadth");
+		record(g.nodes.vectors!, pass(hours(T0, 1)), hours(T0, 1), "breadth");
+		const due = g.nodes.vectors!.review!.due;
+		g.nodes.span!.taught = [T0.toISOString()];
+		assert.deepEqual(creditPrereqs(g, "span", pass(hours(T0, 48)), hours(T0, 48)), []);
+		assert.equal(g.nodes.vectors!.review!.due, due);
 	});
 });

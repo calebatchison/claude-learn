@@ -36863,10 +36863,11 @@ var ASSUMED_FIRST_REVIEW_DAYS = 5;
 var FOLLOWUP_DAYS = 3;
 var isTentative = (e) => e.result === "correct" && e.confidence === "unsure";
 var isReal = (e) => e.via !== "inferred" && !isTentative(e);
+var realFor = (depth) => depth === "breadth" ? (e) => e.via !== "inferred" : isReal;
 var isCleanPass = (e) => e.result === "correct" && (e.hints ?? 0) <= 1;
 var isGenerative = (e) => e.via === "exercise";
 function status(n, depth = "deep") {
-  const real = n.evidence.filter(isReal);
+  const real = n.evidence.filter(realFor(depth));
   if (real.length === 0) {
     if (n.evidence.some((e) => e.via === "inferred" && e.result === "correct")) return "assumed";
     return n.taught?.length ? "taught" : "unseen";
@@ -36957,14 +36958,14 @@ function record2(n, ev, now, depth = "deep") {
   n.review = { interval, due: iso(addDays(now, interval)) };
 }
 function recordBreadth(n, ev, now) {
-  const prev = n.evidence.filter(isReal).at(-1);
+  const prev = n.evidence.filter(realFor("breadth")).at(-1);
   n.evidence.push(ev);
   const followUp = (days) => {
     n.review = { interval: days, due: iso(addDays(now, days)) };
   };
   if (ev.result === "wrong") n.review = { interval: 0, due: iso(now) };
   else if (!isCleanPass(ev)) followUp(1);
-  else if (prev && prev.result !== "correct") followUp(FOLLOWUP_DAYS);
+  else if (isTentative(ev) || prev && prev.result !== "correct") followUp(FOLLOWUP_DAYS);
   else delete n.review;
 }
 function markTaught(n, now) {
@@ -36972,11 +36973,12 @@ function markTaught(n, now) {
 }
 function inferAncestors(g, id, now, ref) {
   const credited = [];
+  const depths2 = nodeDepths(g);
   for (const a of ancestors(g, id)) {
     const n = getNode(g, a);
     if (n.evidence.some(isReal) || n.evidence.some((e) => e.via === "inferred")) continue;
     n.evidence.push({ at: iso(now), via: "inferred", purpose: "probe", check: "recall", result: "correct", ref, note: `inferred from ${id}` });
-    n.review = { interval: ASSUMED_FIRST_REVIEW_DAYS, due: iso(addDays(now, ASSUMED_FIRST_REVIEW_DAYS)) };
+    if (depths2.get(a)?.depth !== "breadth") n.review = { interval: ASSUMED_FIRST_REVIEW_DAYS, due: iso(addDays(now, ASSUMED_FIRST_REVIEW_DAYS)) };
     credited.push(a);
   }
   return credited;
@@ -37003,8 +37005,10 @@ function creditPrereqs(g, id, ev, now) {
     frontier = nextFrontier;
   }
   const moved = [];
+  const depths2 = nodeDepths(g);
   for (const [pid, d] of depth) {
     const p = getNode(g, pid);
+    if (depths2.get(pid)?.depth === "breadth") continue;
     const s = status(p);
     if (s !== "passing" && s !== "solid") continue;
     if (!p.review || p.review.interval <= 0) continue;
@@ -37463,14 +37467,19 @@ import * as path2 from "node:path";
 function activeGoals(g) {
   return g.goals.filter((x) => !x.cleared).sort((a, b) => (a.by ?? "9999").localeCompare(b.by ?? "9999") || a.created.localeCompare(b.created));
 }
+function isDone(g, id, st = statuses(g), depths2 = nodeDepths(g)) {
+  const s = st.get(id);
+  return s === "solid" || s === "assumed" && depths2.get(id)?.depth === "breadth";
+}
 function goalClosure(g, goal, st = statuses(g)) {
+  const depths2 = nodeDepths(g);
   const want = /* @__PURE__ */ new Set();
   for (const t of goal.targets) {
     if (!g.nodes[t]) continue;
     want.add(t);
     for (const a of ancestors(g, t)) want.add(a);
   }
-  return topoOrder(g).filter((id) => want.has(id) && st.get(id) !== "solid");
+  return topoOrder(g).filter((id) => want.has(id) && !isDone(g, id, st, depths2));
 }
 function next(g, now, opts = {}) {
   const reviewCap = opts.reviewCap ?? 4;
@@ -37545,7 +37554,7 @@ function next(g, now, opts = {}) {
     out.push({ action: "teach", node: id, title: n.title, status: s, reason: base + goalNote(id) });
   }
   if (out.length === 0) {
-    const unsolid = ids.filter((id) => st.get(id) !== "solid").length;
+    const unsolid = ids.filter((id) => !isDone(g, id, st, depths2)).length;
     out.push({
       action: "done",
       reason: unsolid ? `nothing due \u2014 ${unsolid} node(s) are passing and will come back for re-checks on schedule` : "every node is solid or covered \u2014 add sources or extend the map"
@@ -38493,7 +38502,9 @@ function finishGrade(grade) {
     status: "graded",
     grade,
     ...grade.result === "wrong" ? { teacher_note: "Probe the miss before moving on: slip, narrow gap, or misconception?" } : {},
-    ...grade.tentative ? { teacher_note: "Right but unsure: don't treat it as known. It comes back for review sooner; consider a quick follow-up from a different angle." } : {}
+    ...grade.tentative ? {
+      teacher_note: grade.status === "solid" ? "Right but unsure on a breadth node: it counts as covered, with one follow-up check in a few days to rule out luck. Move on." : "Right but unsure: don't treat it as known. It comes back for review sooner; consider a quick follow-up from a different angle."
+    } : {}
   };
 }
 server.registerTool(
@@ -38567,7 +38578,7 @@ server.registerTool(
 server.registerTool(
   "quiz_answer",
   {
-    description: "Grade a pending quiz with the learner's selection (labels or letters exactly as they picked them). Empty selected = they don't know (graded as a miss, which is honest and useful). For probes and reviews, pass their confidence: right + unsure is tentative (no mastery credit, review comes sooner); wrong + sure is recorded as a misconception.",
+    description: "Grade a pending quiz with the learner's selection (labels or letters exactly as they picked them). Empty selected = they don't know (graded as a miss, which is honest and useful). For probes and reviews, pass their confidence: right + unsure is tentative on deep nodes (no mastery credit, review comes sooner) and a flagged pass on breadth nodes (covered, one follow-up check); wrong + sure is recorded as a misconception.",
     inputSchema: {
       quiz: external_exports.string(),
       selected: external_exports.array(external_exports.string()),

@@ -25,15 +25,22 @@ export function activeGoals(g: Graph): Goal[] {
 		.sort((a, b) => (a.by ?? "9999").localeCompare(b.by ?? "9999") || a.created.localeCompare(b.created));
 }
 
-/** Targets plus every ancestor that isn't yet satisfied, in teaching order. */
+/** Finished: solid, or (breadth) covered — which includes assumed from placement. */
+export function isDone(g: Graph, id: string, st = statuses(g), depths = nodeDepths(g)): boolean {
+	const s = st.get(id);
+	return s === "solid" || (s === "assumed" && depths.get(id)?.depth === "breadth");
+}
+
+/** Targets plus every ancestor that isn't yet done, in teaching order. */
 export function goalClosure(g: Graph, goal: Goal, st = statuses(g)): string[] {
+	const depths = nodeDepths(g);
 	const want = new Set<string>();
 	for (const t of goal.targets) {
 		if (!g.nodes[t]) continue;
 		want.add(t);
 		for (const a of ancestors(g, t)) want.add(a);
 	}
-	return topoOrder(g).filter((id) => want.has(id) && st.get(id) !== "solid");
+	return topoOrder(g).filter((id) => want.has(id) && !isDone(g, id, st, depths));
 }
 
 export function next(g: Graph, now: Date, opts: PlanOptions = {}): Recommendation[] {
@@ -138,7 +145,7 @@ export function next(g: Graph, now: Date, opts: PlanOptions = {}): Recommendatio
 	}
 
 	if (out.length === 0) {
-		const unsolid = ids.filter((id) => st.get(id) !== "solid").length;
+		const unsolid = ids.filter((id) => !isDone(g, id, st, depths)).length;
 		out.push({
 			action: "done",
 			reason: unsolid

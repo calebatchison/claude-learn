@@ -28,6 +28,8 @@ export const FOLLOWUP_DAYS = 3;
 export const isTentative = (e: Evidence) => e.result === "correct" && e.confidence === "unsure";
 /** Direct evidence that decides status: not inferred, not tentative. */
 const isReal = (e: Evidence) => e.via !== "inferred" && !isTentative(e);
+/** Breadth gives unsure passes grace: they count, and get a follow-up check instead. */
+const realFor = (depth: Depth) => (depth === "breadth" ? (e: Evidence) => e.via !== "inferred" : isReal);
 /** A pass that counts toward mastery: correct and essentially unassisted. */
 const isCleanPass = (e: Evidence) => e.result === "correct" && (e.hints ?? 0) <= 1;
 /** The learner produced the answer rather than picking it. */
@@ -39,7 +41,7 @@ const isGenerative = (e: Evidence) => e.via === "exercise";
  * treats it as finished.
  */
 export function status(n: GraphNode, depth: Depth = "deep"): Status {
-	const real = n.evidence.filter(isReal);
+	const real = n.evidence.filter(realFor(depth));
 	if (real.length === 0) {
 		if (n.evidence.some((e) => e.via === "inferred" && e.result === "correct")) return "assumed";
 		return n.taught?.length ? "taught" : "unseen";
@@ -162,18 +164,18 @@ export function record(n: GraphNode, ev: Evidence, now: Date, depth: Depth = "de
 
 /**
  * Breadth: no spaced reviews. A miss comes back for remediation, and the pass
- * that fixes it gets a single follow-up check; a clean pass otherwise clears
- * any scheduled review.
+ * that fixes it — or a right-but-unsure pass, which might be luck — gets a
+ * single follow-up check; a clean, sure pass otherwise clears any review.
  */
 function recordBreadth(n: GraphNode, ev: Evidence, now: Date): void {
-	const prev = n.evidence.filter(isReal).at(-1);
+	const prev = n.evidence.filter(realFor("breadth")).at(-1);
 	n.evidence.push(ev);
 	const followUp = (days: number) => {
 		n.review = { interval: days, due: iso(addDays(now, days)) };
 	};
 	if (ev.result === "wrong") n.review = { interval: 0, due: iso(now) };
 	else if (!isCleanPass(ev)) followUp(1);
-	else if (prev && prev.result !== "correct") followUp(FOLLOWUP_DAYS);
+	else if (isTentative(ev) || (prev && prev.result !== "correct")) followUp(FOLLOWUP_DAYS);
 	else delete n.review;
 }
 
@@ -184,15 +186,18 @@ export function markTaught(n: GraphNode, now: Date): void {
 /**
  * After a correct placement probe on `id`, credit its unchecked ancestors as
  * "assumed" — you can't do the hard thing without the easy things under it.
- * Assumed nodes get a light verification review later. Returns ids credited.
+ * Assumed deep nodes get a light verification review later; assumed breadth
+ * nodes count as covered. Returns ids credited.
  */
 export function inferAncestors(g: Graph, id: string, now: Date, ref?: string): string[] {
 	const credited: string[] = [];
+	const depths = nodeDepths(g);
 	for (const a of ancestors(g, id)) {
 		const n = getNode(g, a);
 		if (n.evidence.some(isReal) || n.evidence.some((e) => e.via === "inferred")) continue;
 		n.evidence.push({ at: iso(now), via: "inferred", purpose: "probe", check: "recall", result: "correct", ref, note: `inferred from ${id}` });
-		n.review = { interval: ASSUMED_FIRST_REVIEW_DAYS, due: iso(addDays(now, ASSUMED_FIRST_REVIEW_DAYS)) };
+		// Breadth: assumed counts as covered, so there's nothing to verify.
+		if (depths.get(a)?.depth !== "breadth") n.review = { interval: ASSUMED_FIRST_REVIEW_DAYS, due: iso(addDays(now, ASSUMED_FIRST_REVIEW_DAYS)) };
 		credited.push(a);
 	}
 	return credited;
@@ -236,8 +241,11 @@ export function creditPrereqs(g: Graph, id: string, ev: Evidence, now: Date): st
 	}
 
 	const moved: string[] = [];
+	const depths = nodeDepths(g);
 	for (const [pid, d] of depth) {
 		const p = getNode(g, pid);
+		// A breadth node's only review is a follow-up meant to catch luck: leave it.
+		if (depths.get(pid)?.depth === "breadth") continue;
 		const s = status(p);
 		// Assumed nodes still need their first direct check; broken ones need fixing.
 		if (s !== "passing" && s !== "solid") continue;
