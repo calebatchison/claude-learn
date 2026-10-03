@@ -73,7 +73,7 @@ Every quiz and exercise result is recorded as evidence on a map node. Status is 
 | passing | Last check right, but not yet re-verified |
 | solid | Clean passes on **two different kinds** of check (recall, transfer, worked problem, derive) **and** a pass on a **later day**, **and** at least one **free-response** pass, **and**, for a node built on other ideas, a **derive** pass that rebuilt it from all of its prerequisites |
 
-Re-checks use spaced repetition: the interval grows when you pass a due review and resets on a miss. `next` always orders the work the same way:
+Re-checks use spaced repetition: the interval grows when you pass a due review and resets on a miss. Reviews also use the map: a cold, confident pass on an idea pushes back the next review of the ideas underneath it (half their interval one level down, less further down), since you just used them. That only moves dates; it never counts as evidence. `next` always orders the work the same way:
 1. fix what's broken
 2. a few due reviews
 3. new nodes whose prerequisites you hold

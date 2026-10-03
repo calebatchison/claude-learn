@@ -1,6 +1,6 @@
 import { getNode } from "./graph.ts";
-import { inferAncestors, record, status } from "./mastery.ts";
-import type { AssessState, Check, Confidence, Exercise, ExerciseMode, Graph, LinkResult, Purpose, Quiz, QuizOption, Result, Status } from "./types.ts";
+import { creditPrereqs, inferAncestors, record, status } from "./mastery.ts";
+import type { AssessState, Check, Confidence, Evidence, Exercise, ExerciseMode, Graph, LinkResult, Purpose, Quiz, QuizOption, Result, Status } from "./types.ts";
 import { latexToUnicode } from "./plaintext.ts";
 import { iso, letter } from "./util.ts";
 
@@ -84,6 +84,8 @@ export interface QuizGrade {
 	confidence?: Confidence;
 	/** Right but unsure: doesn't count toward mastery or credit ancestors. */
 	tentative?: true;
+	/** Prereqs whose next review moved later because this cold pass exercised them. */
+	reviewsPushed?: string[];
 	node?: string;
 	status?: Status;
 	inferred?: string[];
@@ -115,12 +117,20 @@ export function gradeQuiz(a: AssessState, g: Graph | undefined, quizId: string, 
 	};
 	if (quiz.node && g?.nodes[quiz.node]) {
 		const n = getNode(g, quiz.node);
-		record(
-			n,
-			{ at: iso(now), via: "quiz", purpose: quiz.purpose, check: quiz.check, result, ...(conf ? { confidence: conf } : {}), misconception: grade.misconception, ref: quiz.id },
-			now,
-		);
+		const ev: Evidence = {
+			at: iso(now),
+			via: "quiz",
+			purpose: quiz.purpose,
+			check: quiz.check,
+			result,
+			...(conf ? { confidence: conf } : {}),
+			misconception: grade.misconception,
+			ref: quiz.id,
+		};
+		record(n, ev, now);
 		grade.node = n.id;
+		const credited = creditPrereqs(g, n.id, ev, now);
+		if (credited.length) grade.reviewsPushed = credited;
 		// A lucky guess mustn't credit a whole subtree.
 		if (right && quiz.infer && conf !== "unsure") {
 			const inferred = inferAncestors(g, n.id, now, quiz.id);
@@ -208,7 +218,12 @@ function checkLinks(ex: Exercise, input: ExerciseSubmit): LinkResult[] {
 	return links;
 }
 
-export function submitExercise(a: AssessState, g: Graph | undefined, input: ExerciseSubmit, now: Date): { exercise: Exercise; status?: Status } {
+export function submitExercise(
+	a: AssessState,
+	g: Graph | undefined,
+	input: ExerciseSubmit,
+	now: Date,
+): { exercise: Exercise; status?: Status; reviewsPushed?: string[] } {
 	const ex = a.exercises[input.id];
 	if (!ex) throw new Error(`unknown exercise "${input.id}"`);
 	if (ex.status === "submitted") throw new Error(`${ex.id} was already graded (${ex.result}) — assign a new exercise for another attempt`);
@@ -220,24 +235,24 @@ export function submitExercise(a: AssessState, g: Graph | undefined, input: Exer
 	ex.feedback = input.feedback;
 	if (input.submission) ex.submission = input.submission;
 	let st: Status | undefined;
+	let reviewsPushed: string[] | undefined;
 	if (ex.node && g?.nodes[ex.node]) {
 		const n = getNode(g, ex.node);
-		record(
-			n,
-			{
-				at: iso(now),
-				via: "exercise",
-				purpose: ex.purpose,
-				check: ex.check,
-				result: input.result,
-				hints: input.hints ?? 0,
-				misconception: input.misconception,
-				...(links ? { links } : {}),
-				ref: ex.id,
-			},
-			now,
-		);
+		const ev: Evidence = {
+			at: iso(now),
+			via: "exercise",
+			purpose: ex.purpose,
+			check: ex.check,
+			result: input.result,
+			hints: input.hints ?? 0,
+			misconception: input.misconception,
+			...(links ? { links } : {}),
+			ref: ex.id,
+		};
+		record(n, ev, now);
 		st = status(n);
+		const credited = creditPrereqs(g, n.id, ev, now);
+		if (credited.length) reviewsPushed = credited;
 	}
-	return { exercise: ex, status: st };
+	return { exercise: ex, status: st, ...(reviewsPushed ? { reviewsPushed } : {}) };
 }

@@ -36916,6 +36916,42 @@ function inferAncestors(g, id, now, ref) {
   }
   return credited;
 }
+var IMPLICIT_DEPTH = 3;
+var IMPLICIT_SHARE = (depth) => 0.5 ** depth;
+function creditPrereqs(g, id, ev, now) {
+  if (!isCleanPass(ev) || isTentative(ev) || ev.via === "inferred" || ev.purpose === "probe") return [];
+  const n = getNode(g, id);
+  const lastTaught = n.taught?.at(-1);
+  const cold = ev.purpose === "review" || lastTaught !== void 0 && ymd(new Date(lastTaught)) !== ymd(now);
+  if (!cold) return [];
+  const depth = /* @__PURE__ */ new Map();
+  let frontier = [id];
+  for (let d = 1; d <= IMPLICIT_DEPTH && frontier.length; d++) {
+    const nextFrontier = [];
+    for (const f of frontier) {
+      for (const p of getNode(g, f).prereqs) {
+        if (p === id || depth.has(p)) continue;
+        depth.set(p, d);
+        nextFrontier.push(p);
+      }
+    }
+    frontier = nextFrontier;
+  }
+  const moved = [];
+  for (const [pid, d] of depth) {
+    const p = getNode(g, pid);
+    const s = status(p);
+    if (s !== "passing" && s !== "solid") continue;
+    if (!p.review || p.review.interval <= 0) continue;
+    const due = Date.parse(p.review.due);
+    const cap = addDays(now, p.review.interval).getTime();
+    const pushed = Math.min(due + IMPLICIT_SHARE(d) * p.review.interval * DAY_MS, cap);
+    if (pushed <= due) continue;
+    p.review = { interval: p.review.interval, due: iso(new Date(pushed)) };
+    moved.push(pid);
+  }
+  return moved;
+}
 function isDue(n, now) {
   return !!n.review && Date.parse(n.review.due) <= now.getTime();
 }
@@ -37248,12 +37284,20 @@ function gradeQuiz(a, g, quizId, chosen, now, confidence) {
   };
   if (quiz.node && g?.nodes[quiz.node]) {
     const n = getNode(g, quiz.node);
-    record2(
-      n,
-      { at: iso(now), via: "quiz", purpose: quiz.purpose, check: quiz.check, result, ...conf ? { confidence: conf } : {}, misconception: grade.misconception, ref: quiz.id },
-      now
-    );
+    const ev = {
+      at: iso(now),
+      via: "quiz",
+      purpose: quiz.purpose,
+      check: quiz.check,
+      result,
+      ...conf ? { confidence: conf } : {},
+      misconception: grade.misconception,
+      ref: quiz.id
+    };
+    record2(n, ev, now);
     grade.node = n.id;
+    const credited = creditPrereqs(g, n.id, ev, now);
+    if (credited.length) grade.reviewsPushed = credited;
     if (right && quiz.infer && conf !== "unsure") {
       const inferred = inferAncestors(g, n.id, now, quiz.id);
       if (inferred.length) grade.inferred = inferred;
@@ -37321,26 +37365,26 @@ function submitExercise(a, g, input2, now) {
   ex.feedback = input2.feedback;
   if (input2.submission) ex.submission = input2.submission;
   let st;
+  let reviewsPushed;
   if (ex.node && g?.nodes[ex.node]) {
     const n = getNode(g, ex.node);
-    record2(
-      n,
-      {
-        at: iso(now),
-        via: "exercise",
-        purpose: ex.purpose,
-        check: ex.check,
-        result: input2.result,
-        hints: input2.hints ?? 0,
-        misconception: input2.misconception,
-        ...links ? { links } : {},
-        ref: ex.id
-      },
-      now
-    );
+    const ev = {
+      at: iso(now),
+      via: "exercise",
+      purpose: ex.purpose,
+      check: ex.check,
+      result: input2.result,
+      hints: input2.hints ?? 0,
+      misconception: input2.misconception,
+      ...links ? { links } : {},
+      ref: ex.id
+    };
+    record2(n, ev, now);
     st = status(n);
+    const credited = creditPrereqs(g, n.id, ev, now);
+    if (credited.length) reviewsPushed = credited;
   }
-  return { exercise: ex, status: st };
+  return { exercise: ex, status: st, ...reviewsPushed ? { reviewsPushed } : {} };
 }
 
 // src/core/context.ts
@@ -37398,7 +37442,9 @@ function next(g, now, opts = {}) {
     const misc = [...getNode(g, id).evidence].reverse().find((e) => e.misconception)?.misconception;
     const broken2 = last?.check === "derive" ? (last.links ?? []).filter((l) => !l.ok).map((l) => title(l.from)) : [];
     const why = s === "misconception" ? `misconception to dislodge: "${misc}"` : broken2.length ? `derive missed: couldn't get from ${broken2.join(" and ")} to ${title(id)} \u2014 re-teach that link` : "last check missed";
-    out.push({ action: "remediate", node: id, title: title(id), status: s, reason: why + goalNote(id) });
+    const prereqs = getNode(g, id).prereqs;
+    const suspects = !broken2.length && prereqs.length ? `; builds on ${prereqs.map(title).join(", ")} \u2014 check one first if the miss looks foundational` : "";
+    out.push({ action: "remediate", node: id, title: title(id), status: s, reason: why + suspects + goalNote(id) });
   }
   const due = ids.filter((id) => isSatisfied(st.get(id)) && isDue(getNode(g, id), now)).sort((a, b) => {
     const ga = goalRank.has(a) ? 0 : 1;
@@ -38504,7 +38550,7 @@ server.registerTool(
     const r = submitExercise(a, g, input2, now);
     saveAssess(c, a);
     saveGraph(c, g, now);
-    return json2({ id: r.exercise.id, result: r.exercise.result, node: r.exercise.node, status: r.status });
+    return json2({ id: r.exercise.id, result: r.exercise.result, node: r.exercise.node, status: r.status, reviews_pushed: r.reviewsPushed });
   })
 );
 server.registerTool(

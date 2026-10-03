@@ -262,7 +262,9 @@ function next(g, now, opts = {}) {
     const misc = [...getNode(g, id).evidence].reverse().find((e) => e.misconception)?.misconception;
     const broken2 = last?.check === "derive" ? (last.links ?? []).filter((l) => !l.ok).map((l) => title(l.from)) : [];
     const why = s === "misconception" ? `misconception to dislodge: "${misc}"` : broken2.length ? `derive missed: couldn't get from ${broken2.join(" and ")} to ${title(id)} \u2014 re-teach that link` : "last check missed";
-    out.push({ action: "remediate", node: id, title: title(id), status: s, reason: why + goalNote(id) });
+    const prereqs = getNode(g, id).prereqs;
+    const suspects = !broken2.length && prereqs.length ? `; builds on ${prereqs.map(title).join(", ")} \u2014 check one first if the miss looks foundational` : "";
+    out.push({ action: "remediate", node: id, title: title(id), status: s, reason: why + suspects + goalNote(id) });
   }
   const due = ids.filter((id) => isSatisfied(st.get(id)) && isDue(getNode(g, id), now)).sort((a, b) => {
     const ga = goalRank.has(a) ? 0 : 1;

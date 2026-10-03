@@ -609,7 +609,7 @@ server.registerTool(
 		const r = submitExercise(a, g, input, now);
 		saveAssess(c, a);
 		saveGraph(c, g, now);
-		return json({ id: r.exercise.id, result: r.exercise.result, node: r.exercise.node, status: r.status });
+		return json({ id: r.exercise.id, result: r.exercise.result, node: r.exercise.node, status: r.status, reviews_pushed: r.reviewsPushed });
 	}),
 );
 

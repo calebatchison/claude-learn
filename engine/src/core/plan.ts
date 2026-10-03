@@ -84,7 +84,10 @@ export function next(g: Graph, now: Date, opts: PlanOptions = {}): Recommendatio
 				: broken.length
 					? `derive missed: couldn't get from ${broken.join(" and ")} to ${title(id)} — re-teach that link`
 					: "last check missed";
-		out.push({ action: "remediate", node: id, title: title(id), status: s, reason: why + goalNote(id) });
+		// Not enforced: a miss may come from a weak prereq, so name them for the teacher to judge.
+		const prereqs = getNode(g, id).prereqs;
+		const suspects = !broken.length && prereqs.length ? `; builds on ${prereqs.map(title).join(", ")} — check one first if the miss looks foundational` : "";
+		out.push({ action: "remediate", node: id, title: title(id), status: s, reason: why + suspects + goalNote(id) });
 	}
 
 	// 2. Due reviews (capped so review never eats the session).

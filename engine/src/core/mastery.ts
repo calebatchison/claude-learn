@@ -1,6 +1,6 @@
 import { ancestors, getNode } from "./graph.ts";
 import type { Check, Evidence, Graph, GraphNode, Status } from "./types.ts";
-import { addDays, DAY_MS, iso } from "./util.ts";
+import { addDays, DAY_MS, iso, ymd } from "./util.ts";
 
 /**
  * The mastery bar. A node is solid only when, since its last failure, the
@@ -169,6 +169,60 @@ export function inferAncestors(g: Graph, id: string, now: Date, ref?: string): s
 		credited.push(a);
 	}
 	return credited;
+}
+
+/** How far implicit credit reaches below a node, and how much each level gets. */
+export const IMPLICIT_DEPTH = 3;
+const IMPLICIT_SHARE = (depth: number) => 0.5 ** depth;
+
+/**
+ * A clean, cold pass on a node exercises the ideas under it, so push back
+ * their next reviews: by 50% of the prereq's interval one level down, 25% two
+ * levels down, 12.5% three levels down (the shortest route wins). Due dates
+ * only — it never adds evidence, so prereqs still need direct checks to become
+ * solid, and a push never lands later than a fresh full interval from now.
+ *
+ * Cold = a review, or a pass on a later day than the node was last taught:
+ * the check right after a lesson doesn't count, because the prereqs were just
+ * recalled during it. Returns the ids whose reviews moved.
+ */
+export function creditPrereqs(g: Graph, id: string, ev: Evidence, now: Date): string[] {
+	if (!isCleanPass(ev) || isTentative(ev) || ev.via === "inferred" || ev.purpose === "probe") return [];
+	const n = getNode(g, id);
+	const lastTaught = n.taught?.at(-1);
+	const cold = ev.purpose === "review" || (lastTaught !== undefined && ymd(new Date(lastTaught)) !== ymd(now));
+	if (!cold) return [];
+
+	// Breadth-first, so each ancestor is reached first by its shortest route.
+	const depth = new Map<string, number>();
+	let frontier = [id];
+	for (let d = 1; d <= IMPLICIT_DEPTH && frontier.length; d++) {
+		const nextFrontier: string[] = [];
+		for (const f of frontier) {
+			for (const p of getNode(g, f).prereqs) {
+				if (p === id || depth.has(p)) continue;
+				depth.set(p, d);
+				nextFrontier.push(p);
+			}
+		}
+		frontier = nextFrontier;
+	}
+
+	const moved: string[] = [];
+	for (const [pid, d] of depth) {
+		const p = getNode(g, pid);
+		const s = status(p);
+		// Assumed nodes still need their first direct check; broken ones need fixing.
+		if (s !== "passing" && s !== "solid") continue;
+		if (!p.review || p.review.interval <= 0) continue;
+		const due = Date.parse(p.review.due);
+		const cap = addDays(now, p.review.interval).getTime();
+		const pushed = Math.min(due + IMPLICIT_SHARE(d) * p.review.interval * DAY_MS, cap);
+		if (pushed <= due) continue;
+		p.review = { interval: p.review.interval, due: iso(new Date(pushed)) };
+		moved.push(pid);
+	}
+	return moved;
 }
 
 export function isDue(n: GraphNode, now: Date): boolean {
